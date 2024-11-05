@@ -140,7 +140,7 @@ class BoxDecoder(nn.Module):
         outputs_class = torch.stack([layer_cls_embed(layer_hs) for
                                      layer_cls_embed, layer_hs in zip(self.class_embed, hs)])
         
-        out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord_list[-1]}
+        # out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord_list[-1]}
 
         return outputs_class[-1], outputs_coord_list[-1]
         # return output_box, output_cls

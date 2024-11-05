@@ -368,8 +368,7 @@ def load_state_dict_into_model(
     # end
 
     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
-    
-    ignore_unexpected_keys = ['no_obj_ptr', 'sam_mask_decoder.obj_score_token.weight', 'sam_mask_decoder.pred_obj_score_head.layers.0.weight', 'sam_mask_decoder.pred_obj_score_head.layers.0.bias', 'sam_mask_decoder.pred_obj_score_head.layers.1.weight', 'sam_mask_decoder.pred_obj_score_head.layers.1.bias', 'sam_mask_decoder.pred_obj_score_head.layers.2.weight', 'sam_mask_decoder.pred_obj_score_head.layers.2.bias']
+        
     check_load_state_dict_errors(
         missing_keys,
         unexpected_keys,

@@ -185,12 +185,6 @@ class Trainer:
         distributed = DistributedConf(**distributed or {})
         cuda = CudaConf(**cuda or {})
         self.where = 0.0
-        # add by bryce
-        # _coeff_weight_dict = {
-        #     'loss_ce': 1.0,
-        #     'loss_bbox': 1.0,
-        #     'loss_giou': 1.0,
-        # }
         losses = ['labels', 'boxes', 'cardinality']
         self.loss_for_box = SetCriterion(num_classes=20, matcher=HungarianMatcher(), weight_dict=self.loss_conf.all.weight_dict, focal_alpha=0.25, losses=losses, image_size=model['image_size'])
         self._infer_distributed_backend_if_none(distributed, accelerator)
@@ -470,7 +464,7 @@ class Trainer:
         # for visualize gt mask
         # import matplotlib.pyplot as plt
         # draw_Data = torch.sigmoid(outputs[0]['pred_masks_high_res'])
-        # # draw_Data = torch.where((draw_Data > 0.5).to(float)==1, 255, 0)
+        # draw_Data = torch.where((draw_Data > 0.5).to(float)==1, 255, 0)
         # tensor_np = draw_Data.reshape(-1, 256, 256).cpu().detach().numpy()  # 转换为(18, 256, 256)
         # # 设置图像显示的行数和列数
         # nrows = 4
@@ -497,12 +491,12 @@ class Trainer:
         loss = self.loss[key](outputs, targets)
 
         # add by bryce
-        # targets_boxes = batch.boxes # dict({0:size(9,2,2)})
-        # loss_boxes = self.loss_for_box(outputs_for_boxes, targets_boxes)
+        targets_boxes = batch.boxes # dict({0:size(9,2,2)})
+        loss_boxes = self.loss_for_box(outputs_for_boxes, targets_boxes)
 
-        # for k, v in loss_boxes.items():
-        #     new_key = k.split('_')[0] + '_boxes_' + k.split('_')[1]
-        #     loss[new_key] = v
+        for k, v in loss_boxes.items():
+            new_key = k.split('_')[0] + '_boxes_' + k.split('_')[1]
+            loss[new_key] = v
         # end
 
         loss_str = f"Losses/{phase}_{key}_loss"
@@ -519,9 +513,10 @@ class Trainer:
                 loss, loss_log_str, self.steps[phase]
             )
 
-            # loss = self._add_boxes_loss_into_core_loss(
-            #     loss, loss_boxes, loss_log_str, self.steps[phase]
-            # )
+            # add by bryce
+            loss = self._add_boxes_loss_into_core_loss(
+                loss, loss_boxes, loss_log_str, self.steps[phase]
+            )
 
         if self.steps[phase] % self.logging_conf.log_scalar_frequency == 0:
             self.logger.log(

@@ -180,9 +180,9 @@ trainer:
     use_signed_tpos_enc_to_obj_ptrs: true
     only_obj_ptrs_in_the_past_for_eval: true
     # object occlusion prediction
-    pred_obj_scores: false # changed by bryce
-    pred_obj_scores_mlp: false # changed by bryce
-    fixed_no_obj_ptr: false # changed by bryce
+    pred_obj_scores: true # changed by bryce
+    pred_obj_scores_mlp: true # changed by bryce
+    fixed_no_obj_ptr: true # changed by bryce
     # multimask tracking settings
     multimask_output_for_tracking: false
     use_multimask_token_for_obj_ptr: false
@@ -302,18 +302,18 @@ trainer:
         loss_mask: 20
         loss_dice: 1
         loss_iou: 1
-        loss_class: 1
+        loss_class: 1 # for obj_score, indicating whether there is an object in one channel 
 
         # for boxes
         loss_boxes_bbox: 5
         loss_boxes_giou: 2
-        loss_boxes_ce: 2
+        loss_boxes_ce: 5
         loss_boxes_xy: 1
         loss_boxes_hw: 1
 
       supervise_all_iou: true
       iou_use_l1_loss: true
-      pred_obj_scores: false # changed by bryce
+      pred_obj_scores: true # changed by bryce
       focal_gamma_obj_score: 0.0
       focal_alpha_obj_score: -1.0
 

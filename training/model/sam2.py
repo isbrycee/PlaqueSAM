@@ -120,9 +120,9 @@ class SAM2Train(SAM2Base):
             backbone_out = {"backbone_fpn": None, "vision_pos_enc": None}
 
         # add by bryce; for box prediction 
-        # pred_cls, pred_boxes = self._forward_box_decoder(backbone_out)
-        # backbone_out['box_decoder_pred_cls'] = pred_cls
-        # backbone_out['box_decoder_pred_boxes'] = pred_boxes
+        pred_cls, pred_boxes = self._forward_box_decoder(backbone_out)
+        backbone_out['box_decoder_pred_cls'] = pred_cls
+        backbone_out['box_decoder_pred_boxes'] = pred_boxes
         # end
         
         # backbone_out = self.prepare_prompt_inputs(backbone_out, input)
