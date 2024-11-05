@@ -26,6 +26,8 @@ class SAM2Base(torch.nn.Module):
         memory_attention,
         memory_encoder,
         box_decoder=None, # add by bryce
+        is_class_agnostic=True, # add by bryce
+        num_classes_for_mask=-1, # add by bryce
         num_maskmem=7,  # default 1 input frame + 6 previous frames
         image_size=512,
         backbone_stride=16,  # stride of the image backbone output
@@ -179,7 +181,7 @@ class SAM2Base(torch.nn.Module):
             self.no_obj_embed_spatial = torch.nn.Parameter(torch.zeros(1, self.mem_dim))
             trunc_normal_(self.no_obj_embed_spatial, std=0.02)
 
-        self._build_sam_heads()
+        self._build_sam_heads(is_class_agnostic=is_class_agnostic, num_classes_for_mask=num_classes_for_mask)
         self.max_cond_frames_in_attn = max_cond_frames_in_attn
 
         # add by bryce
@@ -208,7 +210,7 @@ class SAM2Base(torch.nn.Module):
             "See notebooks/video_predictor_example.ipynb for an inference example."
         )
 
-    def _build_sam_heads(self):
+    def _build_sam_heads(self, is_class_agnostic=True, num_classes_for_mask=-1):
         """Build SAM-style prompt encoder and mask decoder."""
         self.sam_prompt_embed_dim = self.hidden_dim
         self.sam_image_embedding_size = self.image_size // self.backbone_stride
@@ -223,6 +225,8 @@ class SAM2Base(torch.nn.Module):
             ),
             input_image_size=(self.image_size, self.image_size),
             mask_in_chans=16,
+            is_class_agnostic=is_class_agnostic, # add by bryce
+            num_classes_for_mask=num_classes_for_mask  # add by bryce
         )
         self.sam_mask_decoder = MaskDecoder(
             num_multimask_outputs=3,

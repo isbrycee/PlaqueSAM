@@ -76,16 +76,18 @@ def sigmoid_focal_loss(
     Returns:
         focal loss tensor
     """
-    prob = inputs.sigmoid() # size(3,1,256,256)
+    # prob = inputs.sigmoid() # size(3,1,256,256) raw ; changed by bryce
     
     if not for_object_score_compute:
         input_softmax = F.softmax(inputs, dim=0)
+        prob = input_softmax # size(3,1,256,256)
         # ce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none") # changed by bryce
         ce_loss = F.binary_cross_entropy(input_softmax, targets, reduction="none") # changed by bryce
-        p_t = prob * targets + (1 - prob) * (1 - targets)
     else:
+        prob = inputs.sigmoid()
         ce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none")
-        p_t = prob * targets + (1 - prob) * (1 - targets)
+        
+    p_t = prob * targets + (1 - prob) * (1 - targets)
     loss = ce_loss * ((1 - p_t) ** gamma)
 
     if alpha >= 0:
@@ -119,6 +121,7 @@ def iou_loss(
     assert inputs.dim() == 4 and targets.dim() == 4
 
     pred_mask = inputs.flatten(2) > 0
+    
     # add by bryce; note here, 0.5 threshold
     # pred_mask = F.softmax(inputs, dim=0).flatten(2) > 0.5
     # end 

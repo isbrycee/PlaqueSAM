@@ -204,6 +204,7 @@ def sample_box_points(
             torch.tensor([W, H, W, H], device=device) - 1
         )  # uncentered pixel coords
         box_coords.clamp_(torch.zeros_like(img_bounds), img_bounds)  # In place clamping
+        
     if not is_provide_box:
         box_coords = box_coords.reshape(-1, 2, 2)  # always 2 points size(3,2,2)
         box_labels = box_labels.reshape(-1, 2) # size(3,2)

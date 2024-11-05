@@ -38,8 +38,6 @@ class BoxDecoder(nn.Module):
         return_intermediate_dec=True,
         modulate_hw_attn=True,
         deformable_decoder=True,
-        
-
     ):
         super().__init__()
         self.input_dim = input_dim

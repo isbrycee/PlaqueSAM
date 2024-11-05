@@ -75,9 +75,11 @@ class RandomUniformSampler(VOSSampler):
             visible_object_ids,
             min(len(visible_object_ids), self.max_num_objects), # change by bryce 
         ))
-        if len(object_ids) != self.max_num_objects:
-            object_ids.append(np.uint8(3)) # 3rd class for caries
-
+        # add by bryce; for handle four categories gt [bg, tooth, plague, caries]
+        # if len(object_ids) < self.max_num_objects:
+        #     object_ids.append(np.uint8(3)) # 3rd class for caries
+        # fixed
+        object_ids = [np.uint8(1), np.uint8(2), np.uint8(3)]
         return SampledFramesAndObjects(frames=frames, object_ids=object_ids)
 
 

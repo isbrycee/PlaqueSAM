@@ -114,7 +114,6 @@ class VOSDataset(VisionDataset):
                 else:
                     # There is no target, we either use a zero mask target or drop this object
                     if not self.always_target:
-                        print('here')
                         continue
                     segment = torch.zeros(h, w, dtype=torch.uint8)
 

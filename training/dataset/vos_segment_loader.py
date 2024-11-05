@@ -134,7 +134,7 @@ class PalettisedPNGSegmentLoader:
         masks = np.array(masks)
 
         object_id = pd.unique(masks.flatten())
-        object_id = object_id[object_id != 0]  # remove background (0)
+        # object_id = object_id[object_id != 0]  # raw: remove background (0); but changed by bryce (for softmax)
 
         # convert into N binary segmentation masks
         binary_segments = {}

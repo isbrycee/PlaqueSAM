@@ -29,6 +29,8 @@ class SAM2Train(SAM2Base):
         memory_attention=None,
         memory_encoder=None,
         box_decoder=None, # add by bryce
+        is_class_agnostic=True, # add by bryce
+        num_classes_for_mask=-1, # add by bryce
         prob_to_use_pt_input_for_train=0.0,
         prob_to_use_pt_input_for_eval=0.0,
         prob_to_use_box_input_for_train=0.0,
@@ -105,6 +107,10 @@ class SAM2Train(SAM2Base):
             for p in self.image_encoder.parameters():
                 p.requires_grad = False
 
+        # add by bryce
+        self._build_sam_heads(is_class_agnostic=is_class_agnostic, num_classes_for_mask=num_classes_for_mask)
+        # end
+
     def forward(self, input: BatchedVideoDatapoint):
         if self.training or not self.forward_backbone_per_frame_for_eval:
             # precompute image features on all frames before tracking
@@ -114,14 +120,15 @@ class SAM2Train(SAM2Base):
             backbone_out = {"backbone_fpn": None, "vision_pos_enc": None}
 
         # add by bryce; for box prediction 
-        pred_cls, pred_boxes = self._forward_box_decoder(backbone_out)
-        backbone_out['box_decoder_pred_cls'] = pred_cls
-        backbone_out['box_decoder_pred_boxes'] = pred_boxes
+        # pred_cls, pred_boxes = self._forward_box_decoder(backbone_out)
+        # backbone_out['box_decoder_pred_cls'] = pred_cls
+        # backbone_out['box_decoder_pred_boxes'] = pred_boxes
         # end
         
         # backbone_out = self.prepare_prompt_inputs(backbone_out, input)
 
         backbone_out = self.prepare_prompt_inputs_box(backbone_out, input)
+
         previous_stages_out = self.forward_tracking(backbone_out, input)
 
         return previous_stages_out, backbone_out
@@ -242,6 +249,7 @@ class SAM2Train(SAM2Base):
                 if use_box_input:
                     points, labels = sample_box_points(
                         gt_masks_per_frame[t],
+                        is_provide_box=False, boxes=None # add by bryce
                     )
                 else:
                     # (here we only sample **one initial point** on initial conditioning frames from the
@@ -263,7 +271,8 @@ class SAM2Train(SAM2Base):
             # no correction points will be sampled when using mask inputs
             frames_to_add_correction_pt = []
         elif num_frames_to_correct == num_init_cond_frames:
-            frames_to_add_correction_pt = init_cond_frames
+            # frames_to_add_correction_pt = init_cond_frames
+            frames_to_add_correction_pt = [] # changed by bryce
         else:
             assert num_frames_to_correct > num_init_cond_frames
             # initial cond frame + randomly selected remaining frames (without replacement)
