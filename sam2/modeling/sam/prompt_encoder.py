@@ -72,6 +72,7 @@ class PromptEncoder(nn.Module):
         self.num_classes_for_mask = num_classes_for_mask
         if not self.is_class_agnostic and self.num_classes_for_mask >  0:
             self.class_embed = nn.Embedding(num_classes_for_mask, embed_dim)
+            self.box_pos_bias = nn.Embedding(num_classes_for_mask, embed_dim)
 
 
     def get_dense_pe(self) -> torch.Tensor:
@@ -111,7 +112,7 @@ class PromptEncoder(nn.Module):
         # add by bryce
         if not self.is_class_agnostic:
             for id in range(self.num_classes_for_mask):
-                point_embedding[id] += self.class_embed.weight[id]
+                point_embedding[id] = self.class_embed.weight[id] + self.box_pos_bias.weight[id]
         return point_embedding
 
     def _embed_boxes(self, boxes: torch.Tensor) -> torch.Tensor:

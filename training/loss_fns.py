@@ -318,7 +318,7 @@ class MultiStepMultiMasksAndIous(nn.Module):
     def reduce_loss(self, losses):
         reduced_loss = 0.0
         for loss_key, weight in self.weight_dict.items():
-            if 'boxes' in loss_key: # add by bryce
+            if 'boxes' in loss_key or 'image_classify' in loss_key: # add by bryce
                 continue
             if loss_key not in losses:
                 raise ValueError(f"{type(self)} doesn't compute {loss_key}")

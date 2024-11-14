@@ -55,7 +55,7 @@ from training.utils.train_utils import (
     setup_distributed_backend,
 )
 
-from setCriterion import SetCriterion, HungarianMatcher
+from setCriterion import SetCriterion, HungarianMatcher, ImageClassificationLoss
 
 CORE_LOSS_KEY = "core_loss"
 
@@ -185,8 +185,11 @@ class Trainer:
         distributed = DistributedConf(**distributed or {})
         cuda = CudaConf(**cuda or {})
         self.where = 0.0
+        # add by bryce
         losses = ['labels', 'boxes', 'cardinality']
         self.loss_for_box = SetCriterion(num_classes=20, matcher=HungarianMatcher(), weight_dict=self.loss_conf.all.weight_dict, focal_alpha=0.25, losses=losses, image_size=model['image_size'])
+        self.loss_for_image_classify = ImageClassificationLoss(class_weights=self.loss_conf.all.weight_dict['loss_image_classify'], class_weights_for_each_class=None)
+
         self._infer_distributed_backend_if_none(distributed, accelerator)
 
         self._setup_device(accelerator)
@@ -458,7 +461,7 @@ class Trainer:
         phase: str,
     ):
         
-        outputs, outputs_for_boxes = model(batch)
+        outputs, outputs_for_boxes, outputs_for_image_classify = model(batch)
         targets = batch.masks # (6, 3, 256, 256)
         
         # for visualize gt mask
@@ -490,15 +493,21 @@ class Trainer:
         key = batch.dict_key  # key for dataset
         loss = self.loss[key](outputs, targets)
 
-        # add by bryce
+        # add by bryce; loss for boxes
         targets_boxes = batch.boxes # dict({0:size(9,2,2)})
         loss_boxes = self.loss_for_box(outputs_for_boxes, targets_boxes)
-
         for k, v in loss_boxes.items():
             new_key = k.split('_')[0] + '_boxes_' + k.split('_')[1]
             loss[new_key] = v
         # end
 
+        # add by bryce; loss for image_classify
+        targets_image_classify = torch.tensor(batch.image_classify)
+        loss_image_classify = self.loss_for_image_classify(outputs_for_image_classify, targets_image_classify)
+        for k, v in loss_image_classify.items():
+            loss[k] = v
+        # end
+        
         loss_str = f"Losses/{phase}_{key}_loss"
         
         loss_log_str = os.path.join("Step_Losses", loss_str)
@@ -517,6 +526,10 @@ class Trainer:
             loss = self._add_boxes_loss_into_core_loss(
                 loss, loss_boxes, loss_log_str, self.steps[phase]
             )
+            loss = self._add_image_classify_loss_into_core_loss(
+                loss, loss_image_classify, loss_log_str, self.steps[phase]
+            )
+            # end
 
         if self.steps[phase] % self.logging_conf.log_scalar_frequency == 0:
             self.logger.log(
@@ -1094,8 +1107,30 @@ class Trainer:
 
         if step % self.logging_conf.log_scalar_frequency == 0:
             for k in loss_boxes:
+                if not k.startswith('loss_'):
+                    continue
                 log_str = os.path.join(loss_str, k)
-                self.logger.log(log_str, loss_boxes[k], step)
+                new_key = k.split('_')[0] + '_boxes_' + k.split('_')[1]
+                weight = self.loss_for_box.weight_dict[new_key]
+                self.logger.log(log_str, loss_boxes[k] * weight, step)
+
+        return core_loss
+    # end 
+
+    # add by bryce
+    def _add_image_classify_loss_into_core_loss(self, loss, loss_image_classify, loss_str, step):
+        core_loss = loss
+
+        for k, v in loss_image_classify.items():
+            if 'error' in k:
+                continue
+            core_loss += v * self.loss_for_image_classify.weight_dict[k]
+
+        if step % self.logging_conf.log_scalar_frequency == 0:
+            for key in loss_image_classify:
+                log_str = os.path.join(loss_str, key)
+                weight = self.loss_for_image_classify.weight_dict['loss_image_classify']
+                self.logger.log(log_str, loss_image_classify[key] * weight, step)
 
         return core_loss
     # end 

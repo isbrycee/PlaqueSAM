@@ -320,3 +320,35 @@ class SetCriterion(nn.Module):
             return losses, indices_list
 
         return losses
+
+
+# add by bryce; for loss of image_classify
+class ImageClassificationLoss(nn.Module):
+    def __init__(self, class_weights=None, class_weights_for_each_class=None): # class_weights=[0.1, 0.2, 0.3, 0.1, 0.2, 0.1])
+        super(ImageClassificationLoss, self).__init__()
+        if class_weights_for_each_class is not None:
+            self.class_weights_for_each_class = torch.tensor(class_weights_for_each_class, dtype=torch.float)
+        else:
+            self.class_weights_for_each_class = None
+        self.weight_dict = {'loss_image_classify': class_weights}
+    def forward(self, outputs, targets):
+        device = outputs.device
+        targets = targets.to(device)
+
+        if self.class_weights_for_each_class is not None:
+            loss_fn = nn.CrossEntropyLoss(weight=self.class_weights_for_each_class)
+        else:
+            loss_fn = nn.CrossEntropyLoss()
+
+        loss = loss_fn(outputs, targets)
+
+        # computing the accuray for training dataset
+        predicted_classes = outputs.argmax(dim=1)
+        correct_predictions = (predicted_classes == targets).sum().item()
+        accuracy = correct_predictions / len(targets)
+        # the weight multiplier will be conduct outside together !!!  not here 
+        # if self.weight_dict is not None:
+        #     loss *= loss
+            
+        return {'loss_image_classify':loss, 
+                'image_classification_error': torch.tensor((1-accuracy) * 100, device=device)}

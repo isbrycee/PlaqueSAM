@@ -26,6 +26,7 @@ class SAM2Base(torch.nn.Module):
         memory_attention,
         memory_encoder,
         box_decoder=None, # add by bryce
+        image_classify_decoder=None, # add by bryce
         is_class_agnostic=True, # add by bryce
         num_classes_for_mask=-1, # add by bryce
         num_maskmem=7,  # default 1 input frame + 6 previous frames
@@ -186,6 +187,7 @@ class SAM2Base(torch.nn.Module):
 
         # add by bryce
         self.box_decoder = box_decoder
+        self.image_classify_decoder = image_classify_decoder
 
         # Model compilation
         if compile_image_encoder:
@@ -922,3 +924,12 @@ class SAM2Base(torch.nn.Module):
         output_box, output_cls = self.box_decoder(backbone_features)
         
         return output_box, output_cls
+    
+    # add by bryce
+    def _forward_image_classify_decoder(
+        self,
+        backbone_features,
+    ):
+        output_image_classes = self.image_classify_decoder(backbone_features)
+        
+        return output_image_classes

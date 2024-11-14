@@ -92,7 +92,8 @@ class VOSDataset(VisionDataset):
                 Frame(
                     data=rgb_images[frame_idx],
                     objects=[],
-                    boxes={}
+                    boxes={}, # add by bryce
+                    image_classify=-1, # add by bryce
                 )
             )
             # We load the gt segments associated with the current frame
@@ -102,7 +103,7 @@ class VOSDataset(VisionDataset):
                 )
             else:
                 segments = segment_loader.load(frame.frame_idx)
-                boxes = bbox_loader.load(frame.frame_idx)
+                boxes, image_classify_gt = bbox_loader.load(frame.frame_idx)
             for obj_id in sampled_object_ids:
                 # Extract the segment
                 if obj_id in segments:
@@ -125,6 +126,7 @@ class VOSDataset(VisionDataset):
                     )
                 )
                 images[frame_idx].boxes = boxes, # add by bryce
+            images[frame_idx].image_classify = int(image_classify_gt)
         return VideoDatapoint(
             frames=images,
             video_id=video.video_id,

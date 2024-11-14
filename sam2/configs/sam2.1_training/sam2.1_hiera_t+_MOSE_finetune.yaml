@@ -89,6 +89,18 @@ trainer:
         fpn_interp_model: nearest
 
     # add by bryce
+    image_classify_decoder: 
+      _target_: sam2.modeling.image_classify_decoder.image_classify_decoder
+      input_dim: 256
+      hidden_dim: 256
+      num_mlp_layers: 3
+      num_classes: 7
+      num_frames: 6
+      dropout: 0.0
+      activation: "relu"
+    # end
+    
+    # add by bryce
     box_decoder: 
       _target_: sam2.modeling.box_decoder.BoxDecoder
       input_dim: 256
@@ -310,6 +322,9 @@ trainer:
         loss_boxes_ce: 5
         loss_boxes_xy: 1
         loss_boxes_hw: 1
+
+        # for image_classify
+        loss_image_classify: 2
 
       supervise_all_iou: true
       iou_use_l1_loss: true

@@ -267,12 +267,22 @@ class JsonBBoxLoader:
                 if item['shape_type'] == 'rectangle':
                     className = item['label']
                     # filter the box for image classification
-                    if 'mouth' in className:
+                    is_get_image_classify_gt = False
+                    if 'mouth' in className and not is_get_image_classify_gt:
+                        if '_' in className:
+                            className_for_image_classify = className.split('_')[-1]
+                            is_get_image_classify_gt = True
+                        elif className[-1].isdigit():
+                            className_for_image_classify = className[-1]
+                            is_get_image_classify_gt = True
+                        else:
+                            print('get className_for_image_classify error!!!')
+                            className_for_image_classify = -1
                         continue
                     boxXYXY = item['points']
                     className_to_boxXYXY[className] = boxXYXY
 
-        return className_to_boxXYXY
+        return className_to_boxXYXY, className_for_image_classify
 
     def __len__(self):
         return

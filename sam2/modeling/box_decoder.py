@@ -112,7 +112,7 @@ class BoxDecoder(nn.Module):
 
         tgt_ = self.tgt_embed.weight[:, None, :].repeat(1, bs, 1).transpose(0, 1) # nq, bs, d_model
         refpoint_embed_ = self.refpoint_embed.weight[:, None, :].repeat(1, bs, 1).transpose(0, 1) # nq, bs, 4
-        init_box_proposal = refpoint_embed_.sigmoid()
+        # init_box_proposal = refpoint_embed_.sigmoid()
         refpoint_embed, tgt = refpoint_embed_, tgt_
         mask_flatten = torch.ones((bs, h*w)).to(device)
         spatial_shapes = torch.tensor((h,w)).to(device)
