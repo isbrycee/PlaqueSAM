@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import logging
+import random
 
 import numpy as np
 import torch
@@ -20,7 +21,9 @@ from sam2.modeling.sam2_utils import (
 from sam2.utils.misc import concat_points
 
 from training.utils.data_utils import BatchedVideoDatapoint
+from utils.box_ops import box_unnormalize_cxcywh_to_xyxy
 
+from sam2.modeling.box_decoder import PostProcess
 
 class SAM2Train(SAM2Base):
     def __init__(
@@ -32,6 +35,8 @@ class SAM2Train(SAM2Base):
         image_classify_decoder=None, # add by bryce
         is_class_agnostic=True, # add by bryce
         num_classes_for_mask=-1, # add by bryce
+        num_frames=-1, # add by bryce
+        num_frames_with_invalid=-1, # add by bryce
         prob_to_use_pt_input_for_train=0.0,
         prob_to_use_pt_input_for_eval=0.0,
         prob_to_use_box_input_for_train=0.0,
@@ -109,10 +114,13 @@ class SAM2Train(SAM2Base):
                 p.requires_grad = False
 
         # add by bryce
+        self.num_frames = num_frames
+        self.num_frames_with_invalid = num_frames_with_invalid
         self._build_sam_heads(is_class_agnostic=is_class_agnostic, num_classes_for_mask=num_classes_for_mask)
+        self.Boxes_Decoder_PostProcess = PostProcess()
         # end
 
-    def forward(self, input: BatchedVideoDatapoint):
+    def forward(self, input: BatchedVideoDatapoint, phase: str):
         if self.training or not self.forward_backbone_per_frame_for_eval:
             # precompute image features on all frames before tracking
             backbone_out = self.forward_image(input.flat_img_batch)
@@ -124,19 +132,41 @@ class SAM2Train(SAM2Base):
         pred_image_classifiy_logits = self._forward_image_classify_decoder(backbone_out)
         backbone_out['image_classifiy_decoder_pred_logits'] = pred_image_classifiy_logits
 
+        # add by bryce; filter the bad images for subsequent training procedure
+        # indices_to_remove = [i for i, value in enumerate(input.image_classify) if value == 6]
+
+        if phase == 'train':
+            indices_to_reserve = [i for i, value in enumerate(input.image_classify) if value != 6]
+        elif phase == 'val':
+            pred_image_classifiy = pred_image_classifiy_logits.argmax(dim=1).tolist()
+            indices_to_reserve = [i for i, value in enumerate(pred_image_classifiy) if value != 6]
+            # indices post-processing
+            indices_to_reserve = self._post_processing_reserved_indices(indices_to_reserve, self.num_frames, self.num_frames_with_invalid)
+
+        backbone_out['vision_features'] = backbone_out['vision_features'][indices_to_reserve]
+
+        for j in range(len(backbone_out['vision_pos_enc'])):
+            backbone_out['vision_pos_enc'][j] = backbone_out['vision_pos_enc'][j][indices_to_reserve]
+            backbone_out['backbone_fpn'][j] = backbone_out['backbone_fpn'][j][indices_to_reserve]
+        
+        # input.batch_size = torch.Size([input.batch_size[0] - len(indices_to_remove)])
+        # assert input.batch_size[0] == backbone_out['vision_features'].shape[0] # check
+        # assert backbone_out['vision_features'].shape[0] == backbone_out['vision_pos_enc'][0].shape[0]
+        # assert backbone_out['vision_features'].shape[0] == backbone_out['backbone_fpn'][0].shape[0]
+
         # add by bryce; for box prediction 
         pred_cls, pred_boxes = self._forward_box_decoder(backbone_out)
         backbone_out['box_decoder_pred_cls'] = pred_cls
         backbone_out['box_decoder_pred_boxes'] = pred_boxes
         # end
-        
+
         # backbone_out = self.prepare_prompt_inputs(backbone_out, input)
 
-        backbone_out = self.prepare_prompt_inputs_box(backbone_out, input)
+        backbone_out = self.prepare_prompt_inputs_box(backbone_out, input, indices_to_reserve, phase=phase)
 
         previous_stages_out = self.forward_tracking(backbone_out, input)
 
-        return previous_stages_out, backbone_out, pred_image_classifiy_logits
+        return previous_stages_out, backbone_out, pred_image_classifiy_logits, indices_to_reserve
 
 
     def _prepare_backbone_features_per_frame(self, img_batch, img_ids):
@@ -292,7 +322,7 @@ class SAM2Train(SAM2Base):
 
         return backbone_out
 
-    def prepare_prompt_inputs_box(self, backbone_out, input, start_frame_idx=0):
+    def prepare_prompt_inputs_box(self, backbone_out, input, indices_to_reserve, phase, start_frame_idx=0):
         """
         Prepare input mask, point or box prompts. Optionally, we allow tracking from
         a custom `start_frame_idx` to the end of the video (for evaluation purposes).
@@ -303,16 +333,42 @@ class SAM2Train(SAM2Base):
         #     stage_id: targets.segments.unsqueeze(1)  # [B, 1, H_im, W_im]
         #     for stage_id, targets in enumerate(input.find_targets)
         # }
-        gt_masks_per_frame = {
-            stage_id: masks.unsqueeze(1)  # [B, 1, H_im, W_im]
-            for stage_id, masks in enumerate(input.masks)
-        }
 
-        gt_boxes_per_frame = input.boxes # add by bryce
+        valid_mask = input.masks[indices_to_reserve] # add by bryce
+
+        gt_masks_per_frame = {
+            stage_id: masks.unsqueeze(1)  # [B, 1, H_im, W_im] 
+            for stage_id, masks in enumerate(valid_mask) # changed by bryce
+        }
+        if phase == 'train':
+            gt_boxes_per_frame = [input.boxes[indx] for indx in indices_to_reserve] # add by bryce; list[{'labels': tensor([ids; num_boxes]), 'boxes': tensor([(absolute xyxy (num_boxes, 4))])}, ]
+        elif phase == 'val':
+            box_decoder_pred = {'pred_logits': backbone_out['box_decoder_pred_cls'],
+                                'pred_boxes': backbone_out['box_decoder_pred_boxes']}
+            device = backbone_out['box_decoder_pred_cls'].device
+            target_sizes = torch.tensor((self.image_size, self.image_size)).repeat((len(box_decoder_pred['pred_logits']), 1)).to(device)
+            results = self.Boxes_Decoder_PostProcess(box_decoder_pred, target_sizes=target_sizes, not_to_xyxy=False, test=False)
+
+            thershold = 0.3 # set a thershold
+
+            gt_boxes_per_frame = []
+            for pred_boxed_info in results:
+                scores = pred_boxed_info['scores']
+                labels = pred_boxed_info['labels']
+                boxes = pred_boxed_info['boxes']
+                select_mask = scores > thershold
+                pred_dict = {
+                    'boxes': boxes[select_mask],
+                    'size': target_sizes,
+                    'box_label': labels[select_mask]
+                }
+                gt_boxes_per_frame.append({'labels':pred_dict['box_label'], 'boxes': pred_dict['boxes']})
+            
 
         # gt_masks_per_frame = input.masks.unsqueeze(2) # [T,B,1,H_im,W_im] keep everything in tensor form
         backbone_out["gt_masks_per_frame"] = gt_masks_per_frame
-        num_frames = input.num_frames
+        # num_frames = input.num_frames
+        num_frames = len(gt_boxes_per_frame)
         backbone_out["num_frames"] = num_frames
         
         # Randomly decide whether to use point inputs or mask inputs
@@ -361,6 +417,7 @@ class SAM2Train(SAM2Base):
             init_cond_frames = [start_frame_idx]  # starting frame
         else:
             # starting frame + randomly selected remaining frames (without replacement)
+            
             init_cond_frames = [start_frame_idx] + self.rng.choice(
                 range(start_frame_idx + 1, num_frames),
                 num_init_cond_frames - 1,
@@ -695,3 +752,20 @@ class SAM2Train(SAM2Base):
         current_out["multistep_object_score_logits"] = all_object_score_logits
 
         return point_inputs, sam_outputs
+
+    def _post_processing_reserved_indices(self, indices_to_reserve, num_frames, num_frames_with_invalid):
+        # Ensure uniqueness of elements
+        unique_indices = list(set(indices_to_reserve))
+
+        # If the length is less than 6, randomly choose numbers from 0 to 7 that are not already in indices_to_reserve
+        if len(unique_indices) < num_frames:
+            available_indices = list(set(range(num_frames_with_invalid)) - set(unique_indices))
+            while len(unique_indices) < num_frames:
+                unique_indices.append(random.choice(available_indices))
+        
+        # If the length exceeds 6, randomly remove elements to make the length 6
+        elif len(unique_indices) > num_frames:
+            random.shuffle(unique_indices)
+            unique_indices = unique_indices[:num_frames]
+
+        return unique_indices

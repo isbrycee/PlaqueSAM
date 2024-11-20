@@ -6,6 +6,21 @@ import torch, os
 from torchvision.ops.boxes import box_area
 
 
+def box_unnormalize_cxcywh_to_xyxy(x, img_size):
+    img_width, img_height = img_size
+    # 分解边界框坐标
+    cx, cy, w, h = x[:, 0], x[:, 1], x[:, 2], x[:, 3]
+
+    # 将中心坐标和宽高归一化到绝对坐标
+    x1 = (cx - 0.5 * w) * img_width
+    y1 = (cy - 0.5 * h) * img_height
+    x2 = (cx + 0.5 * w) * img_width
+    y2 = (cy + 0.5 * h) * img_height
+
+    # 堆叠边界框坐标
+    b = torch.stack((x1, y1, x2, y2), dim=1).to(torch.float32)
+    return b
+
 def box_cxcywh_to_xyxy(x):
     x_c, y_c, w, h = x.unbind(-1)
     b = [(x_c - 0.5 * w), (y_c - 0.5 * h),

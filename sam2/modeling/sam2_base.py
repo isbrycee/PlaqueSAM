@@ -29,6 +29,8 @@ class SAM2Base(torch.nn.Module):
         image_classify_decoder=None, # add by bryce
         is_class_agnostic=True, # add by bryce
         num_classes_for_mask=-1, # add by bryce
+        num_frames=-1, # add by bryce
+        num_frames_with_invalid=-1, # add by bryce
         num_maskmem=7,  # default 1 input frame + 6 previous frames
         image_size=512,
         backbone_stride=16,  # stride of the image backbone output
@@ -188,7 +190,6 @@ class SAM2Base(torch.nn.Module):
         # add by bryce
         self.box_decoder = box_decoder
         self.image_classify_decoder = image_classify_decoder
-
         # Model compilation
         if compile_image_encoder:
             # Compile the forward function (not the full module) to allow loading checkpoints.
@@ -732,7 +733,7 @@ class SAM2Base(torch.nn.Module):
             )
 
         return maskmem_features, maskmem_pos_enc
-
+    
     def _track_step(
         self,
         frame_idx,
@@ -764,18 +765,22 @@ class SAM2Base(torch.nn.Module):
             sam_outputs = self._use_mask_as_output(
                 pix_feat, high_res_features, mask_inputs
             )
-        else:
+        else: 
             # fused the visual feature with previous memory features in the memory bank
-            pix_feat = self._prepare_memory_conditioned_features(
-                frame_idx=frame_idx,
-                is_init_cond_frame=is_init_cond_frame,
-                current_vision_feats=current_vision_feats[-1:],
-                current_vision_pos_embeds=current_vision_pos_embeds[-1:],
-                feat_sizes=feat_sizes[-1:],
-                output_dict=output_dict,
-                num_frames=num_frames,
-                track_in_reverse=track_in_reverse,
-            )
+            # changed by bryce; !!!! note here !!!!
+            # pix_feat = self._prepare_memory_conditioned_features(
+            #     frame_idx=frame_idx,
+            #     is_init_cond_frame=is_init_cond_frame,
+            #     current_vision_feats=current_vision_feats[-1:],
+            #     current_vision_pos_embeds=current_vision_pos_embeds[-1:],
+            #     feat_sizes=feat_sizes[-1:],
+            #     output_dict=output_dict,
+            #     num_frames=num_frames,
+            #     track_in_reverse=track_in_reverse,
+            # )
+            # add by bryce
+            pix_feat = current_vision_feats[-1].permute(1, 2, 0)
+            pix_feat = pix_feat.view(-1, self.hidden_dim, *feat_sizes[-1])
             # apply SAM-style segmentation head
             # here we might feed previously predicted low-res SAM mask logits into the SAM mask decoder,
             # e.g. in demo where such logits come from earlier interaction instead of correction sampling

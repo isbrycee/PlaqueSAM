@@ -461,8 +461,8 @@ class Trainer:
         phase: str,
     ):
         
-        outputs, outputs_for_boxes, outputs_for_image_classify = model(batch)
-        targets = batch.masks # (6, 3, 256, 256)
+        outputs, outputs_for_boxes, outputs_for_image_classify, indices_to_reserve = model(batch, phase)
+        targets = batch.masks[indices_to_reserve] # (6, 3, 256, 256)
         
         # for visualize gt mask
         # import matplotlib.pyplot as plt
@@ -488,21 +488,22 @@ class Trainer:
         # import pdb; pdb.set_trace()
         # end
 
-        batch_size = len(batch.img_batch)
+        batch_size = targets.shape[0]
 
         key = batch.dict_key  # key for dataset
         loss = self.loss[key](outputs, targets)
 
         # add by bryce; loss for boxes
-        targets_boxes = batch.boxes # dict({0:size(9,2,2)})
+        targets_boxes = [batch.boxes[indx] for indx in indices_to_reserve] # dict({0:size(9,2,2)})
         loss_boxes = self.loss_for_box(outputs_for_boxes, targets_boxes)
         for k, v in loss_boxes.items():
             new_key = k.split('_')[0] + '_boxes_' + k.split('_')[1]
             loss[new_key] = v
         # end
-
+ 
         # add by bryce; loss for image_classify
         targets_image_classify = torch.tensor(batch.image_classify)
+
         loss_image_classify = self.loss_for_image_classify(outputs_for_image_classify, targets_image_classify)
         for k, v in loss_image_classify.items():
             loss[k] = v
@@ -577,6 +578,8 @@ class Trainer:
 
         if self.mode in ["train", "val"]:
             self.val_dataset = instantiate(self.data_conf.get(Phase.VAL, None))
+            # add by bryce
+            self.train_dataset = instantiate(self.data_conf.train)
 
         if self.mode in ["train", "train_only"]:
             self.train_dataset = instantiate(self.data_conf.train)
@@ -621,10 +624,14 @@ class Trainer:
         self.epoch -= 1
 
     def run_val(self):
-        if not self.val_dataset:
-            return
+        # changed by bryce
+        # if not self.val_dataset:
+        #     return
 
-        dataloader = self.val_dataset.get_loader(epoch=int(self.epoch))
+        # dataloader = self.val_dataset.get_loader(epoch=int(self.epoch))
+        # add by bryce 
+        dataloader = self.train_dataset.get_loader(epoch=int(self.epoch))
+
         outs = self.val_epoch(dataloader, phase=Phase.VAL)
         del dataloader
         gc.collect()

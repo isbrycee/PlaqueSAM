@@ -128,7 +128,7 @@ def collate_fn(
     img_batch = []
     for video in batch:
         img_batch += [torch.stack([frame.data for frame in video.frames], dim=0)]
-
+    
     img_batch = torch.stack(img_batch, dim=0).permute((1, 0, 2, 3, 4))
     T = img_batch.shape[0]
     # Prepare data structures for sequential processing. Per-frame processing but batched across videos.
@@ -145,47 +145,17 @@ def collate_fn(
     
     # add by bryce
     class_name_to_idx_map = {'51':0, '52':1, '53':2, '54':3, '55':4, 
-                             '61':5, '62':6, '63':7, '64':8, '65':9, 
-                             '71':10, '72':11, '73':12, '74':13, '75':14,
-                             '81':15, '82':16, '83':17, '84':18, '85':19,
+                            '61':5, '62':6, '63':7, '64':8, '65':9, 
+                            '71':10, '72':11, '73':12, '74':13, '75':14,
+                            '81':15, '82':16, '83':17, '84':18, '85':19,
 
-                             '51_stain':0,'52_stain':1, '53_stain':2, '54_stain':3, '55_stain':4, 
-                             '61_stain':5, '62_stain':6, '63_stain':7, '64_stain':8, '65_stain':9, '63_stan':7,
-                             '71_stain':10, '72_stain':11, '73_stain':12, '74_stain':13, '75_stain':14, 
-                             '81_stain':15, '82_stain':16, '83_stain':17, '84_stain':18, '85_stain':19, 
+                            '11': 20, '16': 21,
+                            '21': 22, '26': 23,
+                            '31': 24, '36': 25,
+                            '41': 26, '46': 27,
 
-                             '52_retainedteeth':1,
-                             '53_retainedteeth':2,
-                             '75_discoloration':14,
-                             '51_discoloration':0,
-                             '51_retainedteeth':0,
-                             '61_retainedteeth':5,
-                             '62_retainedteeth':6,
-                             '64_retainedteeth':8,
-                             '63_retainedteeth':7,
-                             '54_retainedteeth':3,
-                             '74_retainedteeth':13,
-                             '61_discoloration':5,
-
-                             '55_crown':4,
-                             '84_crown':18,
-                             '74_crown':13,
-                             
-                             "55'":4,
-                             '622':6,
-                             '585':19,
-                             '875':14,
-
-                             '72\\3':11,
-                             '72/3':11,
-                             '82/83':16,
-
-                             '42':16,
-                             '32':11,
-                             '11': 0,
-                             '31': 10, '36':14, '41': 15, '46':19, 
-                             
-                             }
+                            'doubleteeth': 28,
+                            'crown': 29, }
 
     for video_idx, video in enumerate(batch):
         orig_video_id = video.video_id
