@@ -21,7 +21,6 @@ from sam2.modeling.sam2_utils import (
 from sam2.utils.misc import concat_points
 
 from training.utils.data_utils import BatchedVideoDatapoint
-from utils.box_ops import box_unnormalize_cxcywh_to_xyxy
 
 from sam2.modeling.box_decoder import PostProcess
 
@@ -37,6 +36,8 @@ class SAM2Train(SAM2Base):
         num_classes_for_mask=-1, # add by bryce
         num_frames=-1, # add by bryce
         num_frames_with_invalid=-1, # add by bryce
+        threshold_for_boxes=0.5, # add by bryce
+        threshold_for_masks=0.5, # add by bryce
         prob_to_use_pt_input_for_train=0.0,
         prob_to_use_pt_input_for_eval=0.0,
         prob_to_use_box_input_for_train=0.0,
@@ -116,6 +117,8 @@ class SAM2Train(SAM2Base):
         # add by bryce
         self.num_frames = num_frames
         self.num_frames_with_invalid = num_frames_with_invalid
+        self.threshold_for_boxes = threshold_for_boxes
+        self.threshold_for_masks = threshold_for_masks
         self._build_sam_heads(is_class_agnostic=is_class_agnostic, num_classes_for_mask=num_classes_for_mask)
         self.Boxes_Decoder_PostProcess = PostProcess()
         # end
@@ -162,7 +165,7 @@ class SAM2Train(SAM2Base):
 
         # backbone_out = self.prepare_prompt_inputs(backbone_out, input)
 
-        backbone_out = self.prepare_prompt_inputs_box(backbone_out, input, indices_to_reserve, phase=phase)
+        backbone_out = self.prepare_prompt_inputs_box(backbone_out, input, indices_to_reserve, phase=phase, threshold=self.threshold_for_boxes)
 
         previous_stages_out = self.forward_tracking(backbone_out, input)
 
@@ -322,7 +325,7 @@ class SAM2Train(SAM2Base):
 
         return backbone_out
 
-    def prepare_prompt_inputs_box(self, backbone_out, input, indices_to_reserve, phase, start_frame_idx=0):
+    def prepare_prompt_inputs_box(self, backbone_out, input, indices_to_reserve, phase, threshold=0.3, start_frame_idx=0):
         """
         Prepare input mask, point or box prompts. Optionally, we allow tracking from
         a custom `start_frame_idx` to the end of the video (for evaluation purposes).
@@ -349,14 +352,12 @@ class SAM2Train(SAM2Base):
             target_sizes = torch.tensor((self.image_size, self.image_size)).repeat((len(box_decoder_pred['pred_logits']), 1)).to(device)
             results = self.Boxes_Decoder_PostProcess(box_decoder_pred, target_sizes=target_sizes, not_to_xyxy=False, test=False)
 
-            thershold = 0.3 # set a thershold
-
             gt_boxes_per_frame = []
             for pred_boxed_info in results:
                 scores = pred_boxed_info['scores']
                 labels = pred_boxed_info['labels']
                 boxes = pred_boxed_info['boxes']
-                select_mask = scores > thershold
+                select_mask = scores > threshold
                 pred_dict = {
                     'boxes': boxes[select_mask],
                     'size': target_sizes,

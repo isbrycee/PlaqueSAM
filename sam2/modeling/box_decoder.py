@@ -633,6 +633,7 @@ class PostProcess(nn.Module):
         img_h, img_w = target_sizes.unbind(1)
         scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=1)
         boxes = boxes * scale_fct[:, None, :]
+
         # add by bryce; clip the minor number to zero
         boxes[boxes < 0] = 0
 

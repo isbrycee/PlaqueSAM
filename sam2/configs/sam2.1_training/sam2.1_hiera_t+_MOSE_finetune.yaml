@@ -58,11 +58,12 @@ vos:
 
 trainer:
   _target_: training.trainer.Trainer
-  mode: train # train; val; train_only
+  mode: val # train; val; train_only
   max_epochs: ${times:${scratch.num_epochs},${scratch.phases_per_epoch}}
   accelerator: cuda
   seed_value: 123
   val_epoch_freq: 30
+  val_boxes_class_agnostic: False
 
   model:
     _target_: training.model.sam2.SAM2Train
@@ -176,6 +177,8 @@ trainer:
     num_classes_for_mask: ${scratch.max_num_objects} # add by bryce
     num_frames: ${scratch.num_frames}
     num_frames_with_invalid: ${scratch.num_frames_with_invalid}
+    threshold_for_boxes: 0.5
+    threshold_for_masks: 0.5
     num_maskmem: 5
     image_size: ${scratch.resolution}
     # apply scaled sigmoid on mask logits for memory encoder, and directly feed input mask as output mask

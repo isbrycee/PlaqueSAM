@@ -6,7 +6,7 @@ import torch, os
 from torchvision.ops.boxes import box_area
 
 
-def box_unnormalize_cxcywh_to_xyxy(x, img_size):
+def box_norm_cxcywh_to_unnorm_xyxy(x, img_size):
     img_width, img_height = img_size
     # 分解边界框坐标
     cx, cy, w, h = x[:, 0], x[:, 1], x[:, 2], x[:, 3]
