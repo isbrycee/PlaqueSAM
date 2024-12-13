@@ -206,8 +206,6 @@ Third-party code: we use a GPU-based connected component algorithm adapted from 
 
 
 
-ii
-
 ## Citing SAM 2
 
 If you use SAM 2 or the SA-V dataset in your research, please use the following BibTeX entry.
