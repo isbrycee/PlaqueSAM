@@ -204,6 +204,10 @@ Karen Bergan, Daniel Bolya, Alex Bosenberg, Kai Brown, Vispi Cassod, Christopher
 
 Third-party code: we use a GPU-based connected component algorithm adapted from [`cc_torch`](https://github.com/zsef123/Connected_components_PyTorch) (with its license in [`LICENSE_cctorch`](./LICENSE_cctorch)) as an optional post-processing step for the mask predictions.
 
+
+
+ii
+
 ## Citing SAM 2
 
 If you use SAM 2 or the SA-V dataset in your research, please use the following BibTeX entry.
