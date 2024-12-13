@@ -144,7 +144,7 @@ def organize_data(root_dir, new_folder):
                         img = Image.open(img_path)
 
                         # Load corresponding JSON
-                        json_folder = os.path.join(data_path.split(folder)[0], folder, folder+'_post', data_folder.split('.')[0])
+                        json_folder = os.path.join(data_path.split(folder)[0], folder, folder+'_post_checked', data_folder.split('.')[0])
                         json_file = os.path.join(json_folder, f"{image_name}.json")
                         with open(json_file, 'r') as f:
                             data = json.load(f)
@@ -196,9 +196,14 @@ def organize_data(root_dir, new_folder):
 
 # 输入多个根目录路径
 # root_directories = ["/home/hust/haojing/dental_plague_dataset/10_8/", "/home/hust/haojing/dental_plague_dataset/10_10/"]
-root_directories = ["/home/hust/haojing/dental_plague_dataset/10_24/"]
+root_directories = ["/home/hust/haojing/dental_plague_dataset/raw_data/9_26/", 
+                    "/home/hust/haojing/dental_plague_dataset/raw_data/10_8/",
+                    "/home/hust/haojing/dental_plague_dataset/raw_data/10_10/",
+                    "/home/hust/haojing/dental_plague_dataset/raw_data/10_24/",
+                    "/home/hust/haojing/dental_plague_dataset/raw_data/10_31/"]
 
-save_root_path = '/home/hust/haojing/dental_plague_dataset/10_24_for_training'
+save_root_path = '/home/hust/haojing/dental_plague_dataset/plague_for_training_9_10'
+
 for root_dir in root_directories:
     organize_data(root_dir, save_root_path)
 

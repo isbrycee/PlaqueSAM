@@ -53,7 +53,7 @@ def gene_blur_images_and_jsons(image_folder_path, anno_folder_path, min_images=8
 
             new_save_image_path = os.path.join(image_folder_path, 'blur_' + image)
             blurred_image.save(new_save_image_path)
-            print(new_save_image_path)
+            # print(new_save_image_path)
 
             with open(anno_path, 'r') as f_r:
                 json_anno = json.load(f_r)
@@ -112,6 +112,8 @@ def organize_data(root_dir):
                         anno_folder = images_folder[:index] + images_folder[index:].replace(image_folder_name, annotation_folder_name)
                     else:
                         print('get anno folder error !')
+                    if '.' in anno_folder:
+                        anno_folder = anno_folder.split('.')[0]
                     anno_json_files_list = os.listdir(anno_folder)
                     # print(images_folder)
                     # print(anno_folder)
@@ -125,6 +127,7 @@ def organize_data(root_dir):
 
 # 输入多个根目录路径
 # root_directories = ["/home/hust/haojing/dental_plague_dataset/10_8/", "/home/hust/haojing/dental_plague_dataset/10_10/"]
-root_directories = ["/home/hust/haojing/dental_plague_dataset/10_24"]
-for root_dir in root_directories:
-    organize_data(root_dir)
+root_directories = '/home/hust/haojing/dental_plague_dataset/raw_data/'
+for root_dir in os.listdir(root_directories):
+    single_path = os.path.join(root_directories, root_dir)
+    organize_data(single_path)
