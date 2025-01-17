@@ -105,6 +105,10 @@ class BoxDecoder(nn.Module):
         self.prior_loc_templates_npy_input_path = prior_loc_templates_npy_input_path
         self.is_use_prior_loc_templates = is_use_prior_loc_templates
 
+        self.fpn_channel_proj = [nn.Conv2d(32, 256, kernel_size=1),
+                                 nn.Conv2d(64, 256, kernel_size=1),
+                                 nn.Conv2d(256, 256, kernel_size=1)]
+
         if self.is_use_prior_loc_templates and self.prior_loc_templates_npy_input_path and len(os.listdir(self.prior_loc_templates_npy_input_path)) == 6:
             prior_loc_feas_list = []
             for prior_loc_item in os.listdir(self.prior_loc_templates_npy_input_path):
@@ -115,12 +119,45 @@ class BoxDecoder(nn.Module):
         else:
             self.prior_loc_feas = None
 
+    def _prepare_backbone_features(self, backbone_out):
+        """Prepare and flatten visual features."""
+        backbone_out = backbone_out.copy()
+        assert len(backbone_out["backbone_fpn"]) == len(backbone_out["vision_pos_enc"])
+        device = backbone_out["vision_pos_enc"][0].device
+        num_level_feats = len(backbone_out["backbone_fpn"])
+        level_feats_start_id = 2 # drop the first (high-resolution) and second feature maps since GPU oom
+        feat_sizes = [(x.shape[-2], x.shape[-1]) for x in backbone_out["vision_pos_enc"]][level_feats_start_id:]
+
+        # flatten NxCxHxW to HWxNxC
+        vision_feats = []
+        len_feat_list = []
+        for id, (vision_feat, vision_pos_embed) in enumerate(zip(backbone_out["backbone_fpn"], backbone_out["vision_pos_enc"])):
+            vision_feats.append(self.fpn_channel_proj[id].cuda()(vision_feat)+vision_pos_embed)
+            len_feat_list.append(vision_feats[-1].shape[-2] * vision_feats[-1].shape[-1])
+        
+        len_feat_list = [0] + len_feat_list[level_feats_start_id:]
+        level_start_index = torch.tensor(np.cumsum(np.array(len_feat_list)).tolist()[:num_level_feats-level_feats_start_id]).to(device)
+        spatial_shapes = torch.tensor(feat_sizes).to(device)
+        bs, _, _, _ = backbone_out["backbone_fpn"][0].shape
+        valid_ratios = torch.ones(bs, num_level_feats-level_feats_start_id, 2).to(device)
+
+        # flatten NxCxHxW to HWxNxC
+        memories = [x.flatten(2).permute(2, 0, 1) for x in vision_feats[level_feats_start_id:]]
+        memories = torch.cat(memories, dim=0)
+        return backbone_out, bs, memories, feat_sizes, level_start_index, spatial_shapes, valid_ratios
 
     def forward(self, backbone_out: dict):
-        img_feature = backbone_out['vision_features'] # [6, 256, 16, 16]
-        img_pos = backbone_out['vision_pos_enc'][-1]
-        bs, fea_dim, h, w = img_feature.shape
-        device = img_feature.device
+
+        (
+            _, bs, memories, feat_sizes, level_start_index, spatial_shapes, valid_ratios
+        ) = self._prepare_backbone_features(backbone_out)
+
+        # img_feature = backbone_out['vision_features'] # [8, 256, 64, 64]
+        # img_pos = backbone_out['vision_pos_enc'][-1]
+
+        # bs, fea_dim, h, w = img_feature.shape
+        # device = img_feature.device
+
         # img_fea_with_pos = []
         # for i in range (img_feature.shape[0]):
         #     img_fea_with_pos.append(img_feature[i]+img_pos[i])
@@ -129,13 +166,14 @@ class BoxDecoder(nn.Module):
         refpoint_embed_ = self.refpoint_embed.weight[:, None, :].repeat(1, bs, 1).transpose(0, 1) # nq, bs, 4
         # init_box_proposal = refpoint_embed_.sigmoid()
         refpoint_embed, tgt = refpoint_embed_, tgt_
-        mask_flatten = None # torch.ones((bs, h*w)).to(device)
-        spatial_shapes = torch.tensor((h,w)).to(device).unsqueeze(0)
-        valid_ratios = torch.ones(bs, 1, 2).to(device)
-        level_start_index = torch.tensor(0,).to(device)
+        mask_flatten = None
+        # spatial_shapes = torch.tensor((h,w)).to(device).unsqueeze(0)
+        # valid_ratios = torch.ones(bs, 1, 2).to(device)
+        # level_start_index = torch.tensor(0,).to(device)
+
         hs, references = self.decoder(
                 tgt=tgt.transpose(0, 1), # query 
-                memory=(img_feature+img_pos).reshape(bs, fea_dim, -1).permute(2, 0, 1), # .transpose(0, 1), # .permute(2, 0, 1), # image feature, note here, the memory format is [hw, bs, d_model]
+                memory=memories, # image feature, note here, the memory format is [hw, bs, d_model]
                 memory_key_padding_mask=mask_flatten, 
                 pos=None,
                 refpoints_unsigmoid=refpoint_embed.transpose(0, 1), 
