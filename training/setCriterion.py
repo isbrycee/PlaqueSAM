@@ -217,7 +217,6 @@ class SetCriterion(nn.Module):
             losses['loss_xy'] = loss_bbox[..., :2].sum() / num_boxes
             losses['loss_hw'] = loss_bbox[..., 2:].sum() / num_boxes
 
-
         return losses
 
     def loss_masks(self, outputs, targets, indices, num_boxes):
@@ -282,19 +281,11 @@ class SetCriterion(nn.Module):
 
         """
 
-        outputs_boxes = {'pred_logits': outputs['box_decoder_pred_cls'], 'pred_boxes': outputs['box_decoder_pred_boxes']}
-
+        outputs_boxes = outputs
+        
         # outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs'}
 
-        device=outputs['box_decoder_pred_cls'].device
-        
-        # add by bryce
-        # convert tgt box from unnormalized xyxy to normalized cxcywh
-        for target in targets:
-            boxes_anno_for_each_frame = target['boxes']
-            target['boxes'] = box_normalize_xyxy_to_cxcywh(boxes_anno_for_each_frame, self.image_size).to(device)
-            target['labels'] = target['labels'].to(device)
-        # end
+        device = outputs_boxes['pred_logits'].device
         
         indices = self.matcher(outputs_boxes, targets)
 
@@ -351,4 +342,4 @@ class ImageClassificationLoss(nn.Module):
         #     loss *= loss
             
         return {'loss_image_classify':loss, 
-                'image_classification_error': torch.tensor((1-accuracy) * 100, device=device)}
+                'image_classification_error': torch.tensor((1 - accuracy) * 100, device=device)}

@@ -196,13 +196,15 @@ def organize_data(root_dir, new_folder):
 
 # 输入多个根目录路径
 # root_directories = ["/home/hust/haojing/dental_plague_dataset/10_8/", "/home/hust/haojing/dental_plague_dataset/10_10/"]
-root_directories = ["/home/hust/haojing/dental_plague_dataset/raw_data/9_26/", 
-                    "/home/hust/haojing/dental_plague_dataset/raw_data/10_8/",
-                    "/home/hust/haojing/dental_plague_dataset/raw_data/10_10/",
-                    "/home/hust/haojing/dental_plague_dataset/raw_data/10_24/",
-                    "/home/hust/haojing/dental_plague_dataset/raw_data/10_31/"]
+root_directories = ["/home/jinghao/projects/dental_plague_detection/dataset/11_3/", 
+                    "/home/jinghao/projects/dental_plague_detection/dataset/11_7/", 
+                    "/home/jinghao/projects/dental_plague_detection/dataset/11_12/", 
+                    "/home/jinghao/projects/dental_plague_detection/dataset/11_19/",
+                    "/home/jinghao/projects/dental_plague_detection/dataset/11_20/", 
+                    "/home/jinghao/projects/dental_plague_detection/dataset/12_3/",
+                    "/home/jinghao/projects/dental_plague_detection/dataset/12_5/", ]
 
-save_root_path = '/home/hust/haojing/dental_plague_dataset/plague_for_training_9_10'
+save_root_path = '/home/jinghao/projects/dental_plague_detection/dataset/plague_for_training_11_12'
 
 for root_dir in root_directories:
     organize_data(root_dir, save_root_path)

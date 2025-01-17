@@ -137,7 +137,6 @@ class SAM2Train(SAM2Base):
 
         # add by bryce; filter the bad images for subsequent training procedure
         # indices_to_remove = [i for i, value in enumerate(input.image_classify) if value == 6]
-
         if phase == 'train':
             indices_to_reserve = [i for i, value in enumerate(input.image_classify) if value != 6]
         elif phase == 'val':
@@ -146,6 +145,7 @@ class SAM2Train(SAM2Base):
             # indices post-processing
             indices_to_reserve = self._post_processing_reserved_indices(indices_to_reserve, self.num_frames, self.num_frames_with_invalid)
 
+        assert len(indices_to_reserve) == 6
         backbone_out['vision_features'] = backbone_out['vision_features'][indices_to_reserve]
 
         for j in range(len(backbone_out['vision_pos_enc'])):
@@ -336,9 +336,8 @@ class SAM2Train(SAM2Base):
         #     stage_id: targets.segments.unsqueeze(1)  # [B, 1, H_im, W_im]
         #     for stage_id, targets in enumerate(input.find_targets)
         # }
-
+        
         valid_mask = input.masks[indices_to_reserve] # add by bryce
-
         gt_masks_per_frame = {
             stage_id: masks.unsqueeze(1)  # [B, 1, H_im, W_im] 
             for stage_id, masks in enumerate(valid_mask) # changed by bryce
@@ -346,8 +345,8 @@ class SAM2Train(SAM2Base):
         if phase == 'train':
             gt_boxes_per_frame = [input.boxes[indx] for indx in indices_to_reserve] # add by bryce; list[{'labels': tensor([ids; num_boxes]), 'boxes': tensor([(absolute xyxy (num_boxes, 4))])}, ]
         elif phase == 'val':
-            box_decoder_pred = {'pred_logits': backbone_out['box_decoder_pred_cls'],
-                                'pred_boxes': backbone_out['box_decoder_pred_boxes']}
+            box_decoder_pred = {'pred_logits': backbone_out['box_decoder_pred_cls'][-1],
+                                'pred_boxes': backbone_out['box_decoder_pred_boxes'][-1]}
             device = backbone_out['box_decoder_pred_cls'].device
             target_sizes = torch.tensor((self.image_size, self.image_size)).repeat((len(box_decoder_pred['pred_logits']), 1)).to(device)
             results = self.Boxes_Decoder_PostProcess(box_decoder_pred, target_sizes=target_sizes, not_to_xyxy=False, test=False)
@@ -371,7 +370,6 @@ class SAM2Train(SAM2Base):
         # num_frames = input.num_frames
         num_frames = len(gt_boxes_per_frame)
         backbone_out["num_frames"] = num_frames
-        
         # Randomly decide whether to use point inputs or mask inputs
         if self.training:
             prob_to_use_pt_input = self.prob_to_use_pt_input_for_train
@@ -418,7 +416,6 @@ class SAM2Train(SAM2Base):
             init_cond_frames = [start_frame_idx]  # starting frame
         else:
             # starting frame + randomly selected remaining frames (without replacement)
-            
             init_cond_frames = [start_frame_idx] + self.rng.choice(
                 range(start_frame_idx + 1, num_frames),
                 num_init_cond_frames - 1,

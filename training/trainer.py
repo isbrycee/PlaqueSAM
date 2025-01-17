@@ -12,9 +12,10 @@ import os
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Set
 
 import numpy as np
+import copy
 
 import torch
 import torch.distributed as dist
@@ -59,7 +60,7 @@ from setCriterion import SetCriterion, HungarianMatcher, ImageClassificationLoss
 from sam2.modeling.box_decoder import PostProcess
 from dataset.mAPCalculator import MAPCalculator
 from torchmetrics.classification import MulticlassJaccardIndex, Accuracy
-from training.utils.box_ops import box_norm_cxcywh_to_unnorm_xyxy
+from training.utils.box_ops import box_norm_cxcywh_to_unnorm_xyxy, box_normalize_xyxy_to_cxcywh
 
 CORE_LOSS_KEY = "core_loss"
 
@@ -84,6 +85,7 @@ class OptimConf:
     amp: Optional[Dict[str, Any]] = None
     gradient_clip: Any = None
     gradient_logger: Any = None
+    param_allowlist: Optional[Set[str]] = None # add by bryce
 
     def __post_init__(self):
         # amp
@@ -500,12 +502,12 @@ class Trainer:
 
     def _get_pred_boxes_info_for_evaluate(self, outputs_for_boxes, gt_for_boxes, score_threshod=0.5):
         
-        box_decoder_pred = {'pred_logits': outputs_for_boxes['box_decoder_pred_cls'],
-                                'pred_boxes': outputs_for_boxes['box_decoder_pred_boxes']}
-        device = outputs_for_boxes['box_decoder_pred_cls'].device
-        target_sizes = torch.tensor((self.model_conf.image_size, self.model_conf.image_size)).repeat((len(box_decoder_pred['pred_logits']), 1)).to(device)
+        # box_decoder_pred = {'pred_logits': outputs_for_boxes['box_decoder_pred_cls'],
+        #                         'pred_boxes': outputs_for_boxes['box_decoder_pred_boxes']}
+        device = outputs_for_boxes['pred_logits'].device
+        target_sizes = torch.tensor((self.model_conf.image_size, self.model_conf.image_size)).repeat((len(outputs_for_boxes['pred_logits']), 1)).to(device)
         Boxes_Decoder_PostProcess = PostProcess()
-        results = Boxes_Decoder_PostProcess(box_decoder_pred, target_sizes=target_sizes, not_to_xyxy=False, test=False)
+        results = Boxes_Decoder_PostProcess(outputs_for_boxes, target_sizes=target_sizes, not_to_xyxy=False, test=False)
         
         pred_boxes_per_frame = []
         for pred_boxed_info in results:
@@ -522,11 +524,17 @@ class Trainer:
         
         gt_boxes_per_frame = []
         for target in gt_for_boxes:
-            target_box = box_norm_cxcywh_to_unnorm_xyxy(target['boxes'], (self.model_conf.image_size, self.model_conf.image_size))
-            gt_boxes_per_frame.append({'labels':target['labels'], 'boxes': target_box})
+            # target_box = box_norm_cxcywh_to_unnorm_xyxy(target['boxes'], (self.model_conf.image_size, self.model_conf.image_size))
+            gt_boxes_per_frame.append({'labels':target['labels'].to(device), 'boxes': target['boxes'].to(device)})
 
         return pred_boxes_per_frame, gt_boxes_per_frame
 
+    def _set_aux_loss_for_box_decoder(self, outputs_class, outputs_coord):
+        # this is a workaround to make torchscript happy, as torchscript
+        # doesn't support dictionary with non-homogeneous values, such
+        # as a dict having both a Tensor and a list.
+        return [{'pred_logits': a, 'pred_boxes': b}
+                for a, b in zip(outputs_class[:-1], outputs_coord[:-1])]
         
     def _step(
         self,
@@ -534,15 +542,19 @@ class Trainer:
         model: nn.Module,
         phase: str,
     ):
-        
         outputs, outputs_for_boxes, outputs_for_image_classify, indices_to_reserve = model(batch, phase)
         targets = batch.masks[indices_to_reserve] # (6, 3, 256, 256)
         
         # for visualize gt mask
         # import matplotlib.pyplot as plt
+        # ================================ for visual gt ================================
+        # draw_Data = torch.where((targets.int() > 0.5).to(float)==1, 255, 0)
+        # tensor_np = draw_Data.reshape(-1, self.model_conf.image_size, self.model_conf.image_size).cpu().detach().numpy()  # 转换为(18, 256, 256)
+
+        # ================================ for visual pred ================================
         # draw_Data = torch.sigmoid(outputs[0]['pred_masks_high_res'])
         # draw_Data = torch.where((draw_Data > 0.5).to(float)==1, 255, 0)
-        # tensor_np = draw_Data.reshape(-1, 256, 256).cpu().detach().numpy()  # 转换为(18, 256, 256)
+        # tensor_np = draw_Data.reshape(-1, self.model_conf.image_size, self.model_conf.image_size).cpu().detach().numpy()  # 转换为(18, 256, 256)
         # # 设置图像显示的行数和列数
         # nrows = 4
         # ncols = 6
@@ -563,16 +575,39 @@ class Trainer:
         # end
 
         batch_size = targets.shape[0]
-
+        device = targets.device
         key = batch.dict_key  # key for dataset
         loss = self.loss[key](outputs, targets)
         
         # add by bryce; loss for boxes & evaluation for box
         targets_boxes = [batch.boxes[indx] for indx in indices_to_reserve] # dict({0:size(9,2,2)})
-        loss_boxes = self.loss_for_box(outputs_for_boxes, targets_boxes)
+        targets_boxes_xyxy_unnorm = copy.deepcopy(targets_boxes)
+        # add by bryce
+        # convert tgt box from unnormalized xyxy to normalized cxcywh
+        for target in targets_boxes:
+            boxes_anno_for_each_frame = target['boxes']
+            target['boxes'] = box_normalize_xyxy_to_cxcywh(boxes_anno_for_each_frame, self.model_conf.image_size).to(device)
+            target['labels'] = target['labels'].to(device)
+        targets_boxes_cxcywh = copy.deepcopy(targets_boxes)
+        # end
+
+        # for final prediction supervision
+        outputs_boxes = {'pred_logits': outputs_for_boxes['box_decoder_pred_cls'][-1], 
+                        'pred_boxes': outputs_for_boxes['box_decoder_pred_boxes'][-1]}
+        loss_boxes = self.loss_for_box(outputs_boxes, targets_boxes_cxcywh)
         for k, v in loss_boxes.items():
             new_key = k.split('_')[0] + '_boxes_' + k.split('_')[1]
             loss[new_key] = v
+        # for aux prediction supervision
+        aux_outputs_boxes = self._set_aux_loss_for_box_decoder(outputs_for_boxes['box_decoder_pred_cls'], 
+                                               outputs_for_boxes['box_decoder_pred_boxes'])
+        aux_loss_boxes_list = []
+        for i, aux_outputs_box in enumerate(aux_outputs_boxes):
+            loss_boxes_aux = self.loss_for_box(aux_outputs_box, targets_boxes_cxcywh)
+            aux_loss_boxes_list.append(loss_boxes_aux)
+            for k, v in loss_boxes_aux.items():
+                new_key = k.split('_')[0] + f'_boxes_dec_layer{i}_' + k.split('_')[1]
+                loss[new_key] = v
         # end
 
         # add by bryce; loss for image_classify
@@ -584,11 +619,42 @@ class Trainer:
         
         # add by bryce; for eval
         if phase == 'val':
-            preds_boxes, targets_boxes = self._get_pred_boxes_info_for_evaluate(outputs_for_boxes, targets_boxes, self.model_conf.threshold_for_boxes)
+            outputs_boxes = {'pred_logits': outputs_for_boxes['box_decoder_pred_cls'][-1], 
+                        'pred_boxes': outputs_for_boxes['box_decoder_pred_boxes'][-1]}
+            preds_boxes, targets_boxes = self._get_pred_boxes_info_for_evaluate(outputs_boxes, targets_boxes_xyxy_unnorm, self.model_conf.threshold_for_boxes)
+            ############## for box vis, check box ###################
+            # 绘制图像
+            # boxes = preds_boxes[0]['boxes'].cpu()
+            # labels = preds_boxes[0]['labels'].cpu()
+            # import matplotlib.pyplot as plt
+            # import matplotlib.patches as patches
+            # fig, ax = plt.subplots(figsize=(8, 8))
+            # ax.set_xlim(0, 1024)
+            # ax.set_ylim(0, 1024)
+            # ax.set_xlabel('X-axis')
+            # ax.set_ylabel('Y-axis')
+            # ax.set_title('Bounding Boxes with Labels')
+
+            # # 遍历每个 box 和类别，并绘制
+            # for box, label in zip(boxes, labels):
+            #     x_min, y_min, x_max, y_max = box
+            #     width = x_max - x_min
+            #     height = y_max - y_min
+            #     # 添加矩形框
+            #     rect = patches.Rectangle((x_min, y_min), width, height, linewidth=2, edgecolor='red', facecolor='none')
+            #     ax.add_patch(rect)
+            #     # 添加类别标签
+            #     ax.text(x_min, y_min - 10, f'Class {label}', color='blue', fontsize=10, verticalalignment='bottom', bbox=dict(facecolor='white', alpha=0.5, edgecolor='none'))
+
+            # # 翻转 Y 轴（因为图像坐标系通常以左上角为原点，而 matplotlib 以左下角为原点）
+            # plt.gca().invert_yaxis()
+            # plt.savefig("output.png", dpi=300, bbox_inches='tight')
+            # plt.close()  # 关闭绘图窗口
+            ############## end for box vis, check box ###################
             preds_masks, targets_masks = self._get_pred_masks_info_for_evaluate(outputs, targets, self.model_conf.threshold_for_masks)
             preds_classes, targets_classes = self._get_pred_classification_info_for_evaluate(outputs_for_image_classify, targets_image_classify)
         # 
-
+        
         loss_str = f"Losses/{phase}_{key}_loss"
         
         loss_log_str = os.path.join("Step_Losses", loss_str)
@@ -605,7 +671,7 @@ class Trainer:
 
             # add by bryce
             loss = self._add_boxes_loss_into_core_loss(
-                loss, loss_boxes, loss_log_str, self.steps[phase]
+                loss, loss_boxes, aux_loss_boxes_list, loss_log_str, self.steps[phase]
             )
             loss = self._add_image_classify_loss_into_core_loss(
                 loss, loss_image_classify, loss_log_str, self.steps[phase]
@@ -710,9 +776,9 @@ class Trainer:
         # if not self.val_dataset:
         #     return
 
-        # dataloader = self.val_dataset.get_loader(epoch=int(self.epoch))
+        dataloader = self.val_dataset.get_loader(epoch=int(self.epoch))
         # add by bryce 
-        dataloader = self.train_dataset.get_loader(epoch=int(self.epoch))
+        # dataloader = self.train_dataset.get_loader(epoch=int(self.epoch))
 
         outs = self.val_epoch(dataloader, phase=Phase.VAL)
         del dataloader
@@ -1144,6 +1210,7 @@ class Trainer:
 
             # Check that the keys match the meter keys
             if self.meters_conf is not None and phase in self.meters_conf:
+                
                 assert set(val_keys) == set(self.meters_conf[phase].keys()), (
                     f"Keys in val datasets do not match the keys in meters."
                     f"\nMissing in meters: {set(val_keys) - set(self.meters_conf[phase].keys())}"
@@ -1210,6 +1277,7 @@ class Trainer:
             self.optim_conf.optimizer,
             self.optim_conf.options,
             self.optim_conf.param_group_modifiers,
+            self.optim_conf.param_allowlist, # add by bryce
         )
 
     def _log_loss_detailed_and_return_core_loss(self, loss, loss_str, step):
@@ -1221,13 +1289,19 @@ class Trainer:
         return core_loss
 
     # add by bryce
-    def _add_boxes_loss_into_core_loss(self, loss, loss_boxes, loss_str, step):
+    def _add_boxes_loss_into_core_loss(self, loss, loss_boxes, aux_loss_boxes_list, loss_str, step):
         core_loss = loss
-
+        
         for k, v in loss_boxes.items():
             new_key = k.split('_')[0] + '_boxes_' + k.split('_')[1]
             if 'error' not in new_key:
                 core_loss += v * self.loss_for_box.weight_dict[new_key]
+
+        for aux_loss_boxes in aux_loss_boxes_list:
+            for k, v in aux_loss_boxes.items():
+                new_key = k.split('_')[0] + '_boxes_' + k.split('_')[1]
+                if 'error' not in new_key:
+                    core_loss += v * self.loss_for_box.weight_dict[new_key]
 
         if step % self.logging_conf.log_scalar_frequency == 0:
             for k in loss_boxes:

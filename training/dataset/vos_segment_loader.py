@@ -128,7 +128,6 @@ class PalettisedPNGSegmentLoader:
         mask_path = os.path.join(
             self.video_png_root, self.frame_id_to_png_filename[frame_id]
         )
-
         # load the mask
         masks = PILImage.open(mask_path).convert("P")
         masks = np.array(masks)
@@ -261,6 +260,7 @@ class JsonBBoxLoader:
 
         # load the json
         className_to_boxXYXY = {}
+        className_for_image_classify = -1
         with open(mask_path, 'r') as f:
             json_info = json.load(f)
             for item in json_info['shapes']:
@@ -272,9 +272,6 @@ class JsonBBoxLoader:
                         if '_' in className:
                             className_for_image_classify = className.split('_')[-1]
                             is_get_image_classify_gt = True
-                        elif className[-1].isdigit():
-                            className_for_image_classify = className[-1]
-                            is_get_image_classify_gt = True
                         else:
                             print('get className_for_image_classify error!!!')
                             className_for_image_classify = -1
@@ -282,6 +279,32 @@ class JsonBBoxLoader:
                     boxXYXY = item['points']
                     className_to_boxXYXY[className] = boxXYXY
 
+        # with open(mask_path, 'r') as f:
+            # json_info = json.load(f)
+            # for item in json_info['shapes']:
+            #     className = item['label']
+            #     if 'mouth_' in className:
+            #         className_for_image_classify = className.split('_')[-1]
+
+            # for item in json_info['shapes']:
+            #     if item['shape_type'] == 'rectangle' and 'mouth_' not in item['label']:
+            #         className = item['label']
+            #         # filter the box for image classification
+            #         # is_get_image_classify_gt = False
+            #         boxXYXY = item['points']
+            #         className_to_boxXYXY[className] = boxXYXY
+                        # elif className[-1].isdigit():
+                        #     className_for_image_classify = className[-1]
+                        #     is_get_image_classify_gt = True
+                    # if 'mouth_' in className and not is_get_image_classify_gt:
+                    #     if '_' in className:
+                    #         className_for_image_classify = className.split('_')[-1]
+                    #         is_get_image_classify_gt = True
+                    #     # elif className[-1].isdigit():
+                    #     #     className_for_image_classify = className[-1]
+                    #     #     is_get_image_classify_gt = True
+
+        assert className_for_image_classify != -1
         return className_to_boxXYXY, className_for_image_classify
 
     def __len__(self):

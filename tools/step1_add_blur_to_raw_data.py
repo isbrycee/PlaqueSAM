@@ -79,8 +79,10 @@ def organize_data(root_dir):
     annotation_folder_name = ''
     image_folder_name = ''
     for folder in os.listdir(root_dir):
-        if 'post' in folder:
+        if '_post_checked' in folder:
             annotation_folder_name = folder
+        elif '_post' in folder:
+            continue
         else:
             image_folder_name = folder
 
@@ -107,7 +109,8 @@ def organize_data(root_dir):
                     images = os.listdir(images_folder)
 
                     index = images_folder.rfind(folder)
-                    # import pdb; pdb.set_trace()
+                    # if '11_7' in image_folder_name:
+                    #     import pdb; pdb.set_trace()
                     if index != -1:
                         anno_folder = images_folder[:index] + images_folder[index:].replace(image_folder_name, annotation_folder_name)
                     else:
@@ -115,8 +118,7 @@ def organize_data(root_dir):
                     if '.' in anno_folder:
                         anno_folder = anno_folder.split('.')[0]
                     anno_json_files_list = os.listdir(anno_folder)
-                    # print(images_folder)
-                    # print(anno_folder)
+                    print(images_folder)
                     assert len(images) == len(anno_json_files_list)
 
                     images.sort()
@@ -126,8 +128,12 @@ def organize_data(root_dir):
 
 
 # 输入多个根目录路径
-# root_directories = ["/home/hust/haojing/dental_plague_dataset/10_8/", "/home/hust/haojing/dental_plague_dataset/10_10/"]
-root_directories = '/home/hust/haojing/dental_plague_dataset/raw_data/'
-for root_dir in os.listdir(root_directories):
-    single_path = os.path.join(root_directories, root_dir)
-    organize_data(single_path)
+root_directories = ["/home/jinghao/projects/dental_plague_detection/dataset/11_3/", 
+                    "/home/jinghao/projects/dental_plague_detection/dataset/11_7/", 
+                    "/home/jinghao/projects/dental_plague_detection/dataset/11_12/", "/home/jinghao/projects/dental_plague_detection/dataset/11_19/",
+                    "/home/jinghao/projects/dental_plague_detection/dataset/11_20/", "/home/jinghao/projects/dental_plague_detection/dataset/12_3/",
+                    "/home/jinghao/projects/dental_plague_detection/dataset/12_5/", ]
+# root_directories = ["/home/jinghao/projects/dental_plague_detection/dataset/11_7/",  ]
+for root_dir in root_directories:
+    # single_path = os.path.join(root_directories, root_dir)
+    organize_data(root_dir)

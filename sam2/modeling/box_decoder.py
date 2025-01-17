@@ -16,7 +16,7 @@ from sam2.modeling.sam2_utils import MLP, inverse_sigmoid, gen_sineembed_for_pos
 from torch import Tensor
 import random
 from torchvision.ops.boxes import nms
-
+from ..ops.modules import MSDeformAttn
 
 class BoxDecoder(nn.Module):
     def __init__(
@@ -56,6 +56,7 @@ class BoxDecoder(nn.Module):
         # prepare queries
         self.tgt_embed = nn.Embedding(self.num_queries, self.hidden_dim)
         nn.init.normal_(self.tgt_embed.weight.data)
+
         self.refpoint_embed = nn.Embedding(self.num_queries, 4)
         if self.random_refpoints_xy:
             self.refpoint_embed.weight.data[:, :2].uniform_(0,1)
@@ -104,17 +105,18 @@ class BoxDecoder(nn.Module):
         self.prior_loc_templates_npy_input_path = prior_loc_templates_npy_input_path
         self.is_use_prior_loc_templates = is_use_prior_loc_templates
 
-        if self.prior_loc_templates_npy_input_path and len(os.listdir(self.prior_loc_templates_npy_input_path)) == 6:
+        if self.is_use_prior_loc_templates and self.prior_loc_templates_npy_input_path and len(os.listdir(self.prior_loc_templates_npy_input_path)) == 6:
             prior_loc_feas_list = []
             for prior_loc_item in os.listdir(self.prior_loc_templates_npy_input_path):
                 prior_loc_feas_path = os.path.join(self.prior_loc_templates_npy_input_path, prior_loc_item)
                 prior_loc_feas = np.load(prior_loc_feas_path)['arr_0'] # (256, 3200)
                 prior_loc_feas_list.append(torch.from_numpy(prior_loc_feas).permute(1,0).contiguous())
             self.prior_loc_feas = torch.stack(prior_loc_feas_list, dim=0)
+        else:
+            self.prior_loc_feas = None
 
 
     def forward(self, backbone_out: dict):
-        
         img_feature = backbone_out['vision_features'] # [6, 256, 16, 16]
         img_pos = backbone_out['vision_pos_enc'][-1]
         bs, fea_dim, h, w = img_feature.shape
@@ -122,25 +124,25 @@ class BoxDecoder(nn.Module):
         # img_fea_with_pos = []
         # for i in range (img_feature.shape[0]):
         #     img_fea_with_pos.append(img_feature[i]+img_pos[i])
-
+        
         tgt_ = self.tgt_embed.weight[:, None, :].repeat(1, bs, 1).transpose(0, 1) # nq, bs, d_model
         refpoint_embed_ = self.refpoint_embed.weight[:, None, :].repeat(1, bs, 1).transpose(0, 1) # nq, bs, 4
         # init_box_proposal = refpoint_embed_.sigmoid()
         refpoint_embed, tgt = refpoint_embed_, tgt_
-        mask_flatten = torch.ones((bs, h*w)).to(device)
-        spatial_shapes = torch.tensor((h,w)).to(device)
+        mask_flatten = None # torch.ones((bs, h*w)).to(device)
+        spatial_shapes = torch.tensor((h,w)).to(device).unsqueeze(0)
         valid_ratios = torch.ones(bs, 1, 2).to(device)
-
+        level_start_index = torch.tensor(0,).to(device)
         hs, references = self.decoder(
                 tgt=tgt.transpose(0, 1), # query 
-                memory=(img_feature+img_pos).reshape(bs, fea_dim, -1).transpose(0, 1), # image feature
+                memory=(img_feature+img_pos).reshape(bs, fea_dim, -1).permute(2, 0, 1), # .transpose(0, 1), # .permute(2, 0, 1), # image feature, note here, the memory format is [hw, bs, d_model]
                 memory_key_padding_mask=mask_flatten, 
                 pos=None,
                 refpoints_unsigmoid=refpoint_embed.transpose(0, 1), 
-                level_start_index=[0], 
+                level_start_index=level_start_index, 
                 spatial_shapes=spatial_shapes,
                 valid_ratios=valid_ratios,
-                tgt_mask=torch.ones((self.num_queries, self.num_queries)).to(device),
+                tgt_mask=None, # torch.ones((self.num_queries, self.num_queries)).to(device),
                 adapted_prior_loc_feas=self.prior_loc_feas)
         
         outputs_coord_list = []
@@ -150,13 +152,12 @@ class BoxDecoder(nn.Module):
             layer_outputs_unsig = layer_outputs_unsig.sigmoid()
             outputs_coord_list.append(layer_outputs_unsig)
         outputs_coord_list = torch.stack(outputs_coord_list)
-        
-        outputs_class = torch.stack([layer_cls_embed(layer_hs) for
+    
+        outputs_class_list = torch.stack([layer_cls_embed(layer_hs) for
                                      layer_cls_embed, layer_hs in zip(self.class_embed, hs)])
         
         # out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord_list[-1]}
-
-        return outputs_class[-1], outputs_coord_list[-1]
+        return outputs_class_list, outputs_coord_list # torch.Size([6, 6, 100, 30])
         # return output_box, output_cls
 
 
@@ -368,11 +369,11 @@ class DeformableTransformerDecoderLayer(nn.Module):
             # self.cross_attn = MSDeformableBoxAttention(d_model, n_levels, n_heads, n_boxes=n_points, used_func=box_attn_type)
             self.cross_attn = nn.MultiheadAttention(d_model, n_heads)
         else:
-            # self.cross_attn = MSDeformAttn(d_model, n_levels, n_heads, n_points) # changed by bryce; note change back !!!
-            self.cross_attn = nn.MultiheadAttention(d_model, n_heads)
+            self.cross_attn = MSDeformAttn(d_model, n_levels, n_heads, n_points) # changed by bryce; note change back !!!
+            # self.cross_attn = nn.MultiheadAttention(d_model, n_heads)
         self.dropout1 = nn.Dropout(dropout)
         self.norm1 = nn.LayerNorm(d_model)
-
+        
         # self attention
         self.self_attn = nn.MultiheadAttention(d_model, n_heads, dropout=dropout)
         self.dropout2 = nn.Dropout(dropout)
@@ -390,7 +391,7 @@ class DeformableTransformerDecoderLayer(nn.Module):
         self.key_aware_proj = None
         self.decoder_sa_type = decoder_sa_type
         assert decoder_sa_type in ['sa', 'ca_label', 'ca_content']
-
+        
         if decoder_sa_type == 'ca_content': # changed by bryce; note change back !!!
             # self.self_attn = MSDeformAttn(d_model, n_levels, n_heads, n_points)
             self.self_attn = nn.MultiheadAttention(d_model, n_heads)
@@ -401,8 +402,8 @@ class DeformableTransformerDecoderLayer(nn.Module):
                 # self.cross_attn = MSDeformableBoxAttention(d_model, n_levels, n_heads, n_boxes=n_points, used_func=box_attn_type)
                 self.prior_loc_cross_attn = nn.MultiheadAttention(d_model, n_heads)
             else:
-                # self.cross_attn = MSDeformAttn(d_model, n_levels, n_heads, n_points) # changed by bryce; note change back !!!
-                self.prior_loc_cross_attn = nn.MultiheadAttention(d_model, n_heads)
+                self.cross_attn = MSDeformAttn(d_model, n_levels, n_heads, n_points) # changed by bryce; note change back !!!
+                # self.prior_loc_cross_attn = nn.MultiheadAttention(d_model, n_heads)
             self.dropout4 = nn.Dropout(dropout)
             self.norm4 = nn.LayerNorm(d_model)
             self.prior_loc_adapter = MLP(d_model, d_model, d_model, 3)
@@ -496,10 +497,18 @@ class DeformableTransformerDecoderLayer(nn.Module):
                 raise NotImplementedError("Unknown key_aware_type: {}".format(self.key_aware_type))
         
         # change by bryce; note change back !!!
-        tgt2, tgt2_attn_weights  = self.cross_attn(self.with_pos_embed(tgt, tgt_query_pos), memory, memory)
+        # import pdb; pdb.set_trace()
+        # tgt2, tgt2_attn_weights  = self.cross_attn(self.with_pos_embed(tgt, tgt_query_pos), memory, memory)
         # tgt2 = self.cross_attn(self.with_pos_embed(tgt, tgt_query_pos).transpose(0, 1),
         #                        tgt_reference_points.transpose(0, 1).contiguous(),
         #                        memory.transpose(0, 1), memory_spatial_shapes, memory_level_start_index, memory_key_padding_mask.bool()).transpose(0, 1)
+        tgt2 = self.cross_attn(self.with_pos_embed(tgt, tgt_query_pos).transpose(0, 1), # (6, 100, 256)
+                                tgt_reference_points.transpose(0, 1).contiguous(),
+                                memory.transpose(0, 1), # (6, 4096, 256)
+                                memory_spatial_shapes, # (1, 2)
+                                memory_level_start_index, # tensor(0, device='cuda:0')
+                                memory_key_padding_mask # (6, 4096)
+                                ).transpose(0, 1)
         tgt = tgt + self.dropout1(tgt2)
         tgt = self.norm1(tgt)
 
@@ -575,6 +584,7 @@ class DeformableTransformerDecoderLayer(nn.Module):
                         memory, memory_key_padding_mask, memory_level_start_index, \
                             memory_spatial_shapes, memory_pos, self_attn_mask, cross_attn_mask)
             elif funcname == 'plca':
+                continue
                 tgt = self.forward_plca(tgt, tgt_query_pos, \
                         adapted_prior_loc_feas
                         )
@@ -636,7 +646,6 @@ class PostProcess(nn.Module):
 
         # add by bryce; clip the minor number to zero
         boxes[boxes < 0] = 0
-
 
         if self.nms_iou_threshold > 0:
             item_indices = [nms(b, s, iou_threshold=self.nms_iou_threshold) for b,s in zip(boxes, scores)]

@@ -184,11 +184,15 @@ def validate_param_group_params(param_groups: List[Dict], model: nn.Module):
     model_parameters = {parameter for _, parameter in model.named_parameters()}
     for p1, p2 in itertools.permutations(parameters, 2):
         assert p1.isdisjoint(p2), "Scheduler generated param_groups should be disjoint"
-    assert set.union(*parameters) == model_parameters, (
-        "Scheduler generated param_groups must include all parameters of the model."
-        f" Found {len(set.union(*parameters))} params whereas model has"
-        f" {len(model_parameters)} params"
-    )
+    # assert set.union(*parameters) == model_parameters, (
+    #     "Scheduler generated param_groups must include all parameters of the model."
+    #     f" Found {len(set.union(*parameters))} params whereas model has"
+    #     f" {len(model_parameters)} params"
+    # )
+    # cahnged by bryce
+    logging.info(
+            f" !!! Attention !!! {round(len(set.union(*parameters))/len(model_parameters)*100, 2)}% parameters have been trained!!! "
+        )
 
 
 def unix_module_cls_pattern_to_parameter_names(
@@ -327,7 +331,10 @@ def construct_optimizer(
     """
     if param_allowlist is None:
         param_allowlist = {name for name, _ in model.named_parameters()}
-
+    # changed by bryce
+    else:
+        param_allowlist = {name for name, _ in model.named_parameters() 
+                           if any(fnmatch.fnmatch(name, param_allow) for param_allow in param_allowlist)}
     named_parameters = {
         name: param
         for name, param in model.named_parameters()

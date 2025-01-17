@@ -144,6 +144,19 @@ def collate_fn(
     ]  # List to store frame indices for each time step
     
     # add by bryce
+    # class_name_to_idx_map = {'51':0, '52':1, '53':2, '54':3, '55':4, 
+    #                         '61':5, '62':6, '63':7, '64':8, '65':9, 
+    #                         '71':10, '72':11, '73':12, '74':13, '75':14,
+    #                         '81':15, '82':16, '83':17, '84':18, '85':19,
+
+    #                         '11': 20, '16': 21,
+    #                         '21': 22, '26': 23,
+    #                         '31': 24, '36': 25,
+    #                         '41': 26, '46': 27,
+
+    #                         'doubleteeth': 28,
+    #                         'crown': 29, }
+    # add by bryce
     class_name_to_idx_map = {'51':0, '52':1, '53':2, '54':3, '55':4, 
                             '61':5, '62':6, '63':7, '64':8, '65':9, 
                             '71':10, '72':11, '73':12, '74':13, '75':14,
@@ -155,7 +168,44 @@ def collate_fn(
                             '41': 26, '46': 27,
 
                             'doubleteeth': 28,
-                            'crown': 29, }
+                            'crown': 29,
+
+                            '51_stain':0,'52_stain':1, '53_stain':2, '54_stain':3, '55_stain':4, 
+                            '61_stain':5, '62_stain':6, '63_stain':7, '64_stain':8, '65_stain':9, '63_stan':7,
+                            '71_stain':10, '72_stain':11, '73_stain':12, '74_stain':13, '75_stain':14, 
+                            '81_stain':15, '82_stain':16, '83_stain':17, '84_stain':18, '85_stain':19, 
+                            '71_stian':10,
+
+                            '52_retainedteeth':1,
+                            '53_retainedteeth':2,
+                            '75_discoloration':14,
+                            '51_discoloration':0,
+                            '51_retainedteeth':0,
+                            '61_retainedteeth':5,
+                            '62_retainedteeth':6,
+                            '64_retainedteeth':8,
+                            '63_retainedteeth':7,
+                            '54_retainedteeth':3,
+                            '74_retainedteeth':13,
+                            '61_discoloration':5,
+
+                            '55_crown':29,
+                            '84_crown':29,
+                            '74_crown':29,
+                            
+                            '110': 20,
+                            "55'":4,
+                            '622':6,
+                            '585':19,
+                            '875':14,
+
+                            '72\\3':28,
+                            '72/3':28,
+                            '82/83':28,
+                            '81/82': 28,
+                            }
+
+
 
     for video_idx, video in enumerate(batch):
         orig_video_id = video.video_id
@@ -172,7 +222,6 @@ def collate_fn(
             for sublist in meta_box_info.keys():
                 if '_' in sublist:
                     sublist = sublist.split('_')[0]
-
 
             merged_meta_class_info = [class_name_to_idx_map[sublist] for sublist in meta_box_info.keys()]
             merged_meta_class_info = torch.tensor(merged_meta_class_info, dtype=torch.int64)
@@ -208,7 +257,7 @@ def collate_fn(
     )
     boxes = step_t_boxes # add by bryce
     image_classify = step_t_image_classify # add by bryce
-
+    
     return BatchedVideoDatapoint(
         img_batch=img_batch,
         obj_to_frame_idx=obj_to_frame_idx,

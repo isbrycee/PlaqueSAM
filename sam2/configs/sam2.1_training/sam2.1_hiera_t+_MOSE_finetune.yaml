@@ -1,22 +1,28 @@
 # @package _global_
 
 scratch:
-  resolution: 256
+  resolution: 1024
   train_batch_size: 1
-  num_train_workers: 10
+  num_train_workers: 16
   num_frames: 6
   num_frames_with_invalid: 8
   max_num_objects: 3
-  base_lr: 5.0e-6
-  vision_lr: 3.0e-06
+  base_lr: 5.0e-5 # 5.0e-6
+  vision_lr: 3.0e-06 # 3.0e-06
   phases_per_epoch: 1
-  num_epochs: 3000
-dataset:
+  num_epochs: 500
+dataset_train:
   # PATHS to Dataset
-  img_folder: /home/hust/haojing/dental_plague_dataset/10_24_for_training/JPEGImages/ # NewFolder
-# /home/hust/haojing/sam2/datasets/DPS/JPEGImages/ # PATH to MOSE JPEGImages folder DPS valid_demo
-  gt_folder: /home/hust/haojing/dental_plague_dataset/10_24_for_training/Annotations/ # /home/hust/haojing/sam2/datasets/DPS/Annotations/  # PATH to MOSE Annotations folder
-  gt_box_folder: /home/hust/haojing/dental_plague_dataset/10_24_for_training/Json/ # /home/hust/haojing/sam2/datasets/DPS/Json/ 
+  img_folder: /home/jinghao/projects/dental_plague_detection/dataset/train/JPEGImages/
+  gt_folder: /home/jinghao/projects/dental_plague_detection/dataset/train/Annotations/ # PATH to MOSE Annotations folder
+  gt_box_folder: /home/jinghao/projects/dental_plague_detection/dataset/train/Json/
+  file_list_txt: # training/assets/MOSE_sample_train_list.txt # Optional PATH to filelist containing a subset of videos to be used for training
+  multiplier: 1 # changed by bryce from 2
+dataset_test:
+  # PATHS to Dataset
+  img_folder: /home/jinghao/projects/dental_plague_detection/dataset/test/JPEGImages/ 
+  gt_folder: /home/jinghao/projects/dental_plague_detection/dataset/test/Annotations/  # PATH to MOSE Annotations folder
+  gt_box_folder: /home/jinghao/projects/dental_plague_detection/dataset/test/Json/ 
   file_list_txt: # training/assets/MOSE_sample_train_list.txt # Optional PATH to filelist containing a subset of videos to be used for training
   multiplier: 2
 
@@ -58,11 +64,11 @@ vos:
 
 trainer:
   _target_: training.trainer.Trainer
-  mode: val # train; val; train_only
+  mode: train # train; val; train_only
   max_epochs: ${times:${scratch.num_epochs},${scratch.phases_per_epoch}}
   accelerator: cuda
   seed_value: 123
-  val_epoch_freq: 30
+  val_epoch_freq: 2
   val_boxes_class_agnostic: False
 
   model:
@@ -108,11 +114,13 @@ trainer:
       _target_: sam2.modeling.box_decoder.BoxDecoder
       input_dim: 256
       hidden_dim: 256
-      num_decoder_layers: 2
+      dec_n_points: 64
+      dim_feedforward: 2048
+      num_decoder_layers: 6
       num_classes: 30
       num_frames: ${scratch.num_frames}
-      is_use_prior_loc_templates: True
-      prior_loc_templates_npy_input_path: '/home/hust/haojing/sam2/saved_tensors'
+      is_use_prior_loc_templates: False
+      prior_loc_templates_npy_input_path: '/home/jinghao/projects/dental_plague_detection/Self-PPD/saved_tensors'
     # end
 
     memory_attention:
@@ -177,7 +185,7 @@ trainer:
     num_classes_for_mask: ${scratch.max_num_objects} # add by bryce
     num_frames: ${scratch.num_frames}
     num_frames_with_invalid: ${scratch.num_frames_with_invalid}
-    threshold_for_boxes: 0.5
+    threshold_for_boxes: 0.0
     threshold_for_masks: 0.5
     num_maskmem: 5
     image_size: ${scratch.resolution}
@@ -253,15 +261,15 @@ trainer:
               training: true
               video_dataset:
                 _target_: training.dataset.vos_raw_dataset.PNGRawDataset
-                img_folder: ${dataset.img_folder}
-                gt_folder: ${dataset.gt_folder}
-                gt_box_folder: ${dataset.gt_box_folder}
-                file_list_txt: ${dataset.file_list_txt}
+                img_folder: ${dataset_train.img_folder}
+                gt_folder: ${dataset_train.gt_folder}
+                gt_box_folder: ${dataset_train.gt_box_folder}
+                file_list_txt: ${dataset_train.file_list_txt}
               sampler:
                 _target_: training.dataset.vos_sampler.RandomUniformSampler
                 num_frames: ${scratch.num_frames_with_invalid}
                 max_num_objects: ${scratch.max_num_objects}
-              multiplier: ${dataset.multiplier}
+              multiplier: ${dataset_train.multiplier}
       shuffle: True
       num_workers: ${scratch.num_train_workers}
       pin_memory: True
@@ -272,39 +280,39 @@ trainer:
         dict_key: all
 
     # add by bryce for evaluation
-    # val:
-    #   _target_: training.dataset.sam2_datasets.TorchTrainMixedDataset
-    #   phases_per_epoch: ${scratch.phases_per_epoch}
-    #   batch_sizes:
-    #     - ${scratch.train_batch_size}
+    val:
+      _target_: training.dataset.sam2_datasets.TorchTrainMixedDataset
+      phases_per_epoch: ${scratch.phases_per_epoch}
+      batch_sizes:
+        - ${scratch.train_batch_size}
 
-    #   datasets:
-    #     - _target_: training.dataset.utils.RepeatFactorWrapper
-    #       dataset:
-    #         _target_: training.dataset.utils.ConcatDataset
-    #         datasets:
-    #         - _target_: training.dataset.vos_dataset.VOSDataset
-    #           transforms: ${vos.train_transforms}
-    #           training: true
-    #           video_dataset:
-    #             _target_: training.dataset.vos_raw_dataset.PNGRawDataset
-    #             img_folder: ${dataset.img_folder}
-    #             gt_folder: ${dataset.gt_folder}
-    #             gt_box_folder: ${dataset.gt_box_folder}
-    #             file_list_txt: ${dataset.file_list_txt}
-    #           sampler:
-    #             _target_: training.dataset.vos_sampler.RandomUniformSampler
-    #             num_frames: ${scratch.num_frames_with_invalid}
-    #             max_num_objects: ${scratch.max_num_objects}
-    #           multiplier: ${dataset.multiplier}
-    #   shuffle: True
-    #   num_workers: ${scratch.num_train_workers}
-    #   pin_memory: True
-    #   drop_last: True
-    #   collate_fn:
-    #     _target_: training.utils.data_utils.collate_fn
-    #     _partial_: true
-    #     dict_key: all
+      datasets:
+        - _target_: training.dataset.utils.RepeatFactorWrapper
+          dataset:
+            _target_: training.dataset.utils.ConcatDataset
+            datasets:
+            - _target_: training.dataset.vos_dataset.VOSDataset
+              transforms: ${vos.train_transforms}
+              training: False
+              video_dataset:
+                _target_: training.dataset.vos_raw_dataset.PNGRawDataset
+                img_folder: ${dataset_test.img_folder}
+                gt_folder: ${dataset_test.gt_folder}
+                gt_box_folder: ${dataset_test.gt_box_folder}
+                file_list_txt: ${dataset_test.file_list_txt}
+              sampler:
+                _target_: training.dataset.vos_sampler.RandomUniformSampler
+                num_frames: ${scratch.num_frames_with_invalid}
+                max_num_objects: ${scratch.max_num_objects}
+              multiplier: ${dataset_test.multiplier}
+      shuffle: False
+      num_workers: ${scratch.num_train_workers}
+      pin_memory: True
+      drop_last: False
+      collate_fn:
+        _target_: training.utils.data_utils.collate_fn
+        _partial_: true
+        dict_key: val 
 
   optim:
     amp:
@@ -318,11 +326,16 @@ trainer:
       _target_: training.optimizer.GradientClipper
       max_norm: 0.1
       norm_type: 2
+        
+    # param_allowlist:
+    #   - 'box_decoder.*'
+    #   - 'image_encoder.*'
+    #   - '*norm*'
 
     param_group_modifiers:
       - _target_: training.optimizer.layer_decay_param_modifier
         _partial_: True
-        layer_decay_value: 0.9
+        layer_decay_value: 0.9 # 0.9
         apply_to: 'image_encoder.trunk'
         overrides:
           - pattern: '*pos_embed*'
@@ -348,27 +361,52 @@ trainer:
             _target_: fvcore.common.param_scheduler.ConstantParamScheduler
             value: 0.0
           param_names:
-            - '*bias*'
-          module_cls_names: ['torch.nn.LayerNorm']
+            - 'image_encoder.trunk.*bias*' # # changed by bryce from '*bias*'
+          module_cls_names: ['torch.nn.LayerNorm'] # changed by bryce
 
   loss:
     all:
       _target_: training.loss_fns.MultiStepMultiMasksAndIous
       weight_dict:
-        loss_mask: 20
+        loss_mask: 2
         loss_dice: 1
         loss_iou: 1
         loss_class: 1 # for obj_score, indicating whether there is an object in one channel 
 
         # for boxes
-        loss_boxes_bbox: 5
-        loss_boxes_giou: 2
-        loss_boxes_ce: 5
+        loss_boxes_bbox: 5 # 5
+        loss_boxes_giou: 2 # 2
+        loss_boxes_ce: 10 # 5
         loss_boxes_xy: 1
         loss_boxes_hw: 1
 
         # for image_classify
-        loss_image_classify: 2
+        loss_image_classify: 1
+
+      supervise_all_iou: true
+      iou_use_l1_loss: true
+      pred_obj_scores: true # changed by bryce
+      focal_gamma_obj_score: 0.0
+      focal_alpha_obj_score: -1.0
+
+    # add by bryce
+    val:
+      _target_: training.loss_fns.MultiStepMultiMasksAndIous
+      weight_dict:
+        loss_mask: 2
+        loss_dice: 1
+        loss_iou: 1
+        loss_class: 1 # for obj_score, indicating whether there is an object in one channel 
+
+        # for boxes
+        loss_boxes_bbox: 5 # 5
+        loss_boxes_giou: 2 # 2
+        loss_boxes_ce: 10 # 5
+        loss_boxes_xy: 1
+        loss_boxes_hw: 1
+
+        # for image_classify
+        loss_image_classify: 1
 
       supervise_all_iou: true
       iou_use_l1_loss: true
@@ -402,12 +440,12 @@ trainer:
 
       state_dict:
         _target_: training.utils.checkpoint_utils.load_checkpoint_and_apply_kernels
-        checkpoint_path: /home/hust/haojing/sam2/checkpoints/sam2.1_hiera_tiny.pt # PATH to SAM 2.1 checkpoint
+        checkpoint_path: /home/jinghao/projects/dental_plague_detection/Self-PPD/checkpoints/sam2.1_hiera_tiny.pt # PATH to SAM 2.1 checkpoint
         ckpt_state_dict_keys: ['model']
 
 launcher:
   num_nodes: 1
-  gpus_per_node: 8
+  gpus_per_node: 1
   experiment_log_dir: null # Path to log directory, defaults to ./sam2_logs/${config_name}
 
 # SLURM args if running on a cluster

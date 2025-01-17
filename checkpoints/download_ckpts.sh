@@ -48,12 +48,12 @@ echo "Downloading sam2.1_hiera_tiny.pt checkpoint..."
 $CMD $sam2p1_hiera_t_url || { echo "Failed to download checkpoint from $sam2p1_hiera_t_url"; exit 1; }
 
 echo "Downloading sam2.1_hiera_small.pt checkpoint..."
-$CMD $sam2p1_hiera_s_url || { echo "Failed to download checkpoint from $sam2p1_hiera_s_url"; exit 1; }
+# $CMD $sam2p1_hiera_s_url || { echo "Failed to download checkpoint from $sam2p1_hiera_s_url"; exit 1; }
 
 echo "Downloading sam2.1_hiera_base_plus.pt checkpoint..."
-$CMD $sam2p1_hiera_b_plus_url || { echo "Failed to download checkpoint from $sam2p1_hiera_b_plus_url"; exit 1; }
+# $CMD $sam2p1_hiera_b_plus_url || { echo "Failed to download checkpoint from $sam2p1_hiera_b_plus_url"; exit 1; }
 
 echo "Downloading sam2.1_hiera_large.pt checkpoint..."
-$CMD $sam2p1_hiera_l_url || { echo "Failed to download checkpoint from $sam2p1_hiera_l_url"; exit 1; }
+# $CMD $sam2p1_hiera_l_url || { echo "Failed to download checkpoint from $sam2p1_hiera_l_url"; exit 1; }
 
 echo "All checkpoints are downloaded successfully."

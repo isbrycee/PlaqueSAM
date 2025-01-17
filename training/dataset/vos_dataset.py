@@ -84,6 +84,7 @@ class VOSDataset(VisionDataset):
         sampled_object_ids = sampled_frms_and_objs.object_ids
 
         images = []
+        for_check = []
         rgb_images = load_images(sampled_frames)
         # Iterate over the sampled frames and store their rgb data and object data (bbox, segment)
         for frame_idx, frame in enumerate(sampled_frames):
@@ -104,6 +105,7 @@ class VOSDataset(VisionDataset):
             else:
                 segments = segment_loader.load(frame.frame_idx)
                 boxes, image_classify_gt = bbox_loader.load(frame.frame_idx)
+                for_check.append(image_classify_gt)
             for obj_id in sampled_object_ids:
                 # Extract the segment
                 if obj_id in segments:
@@ -125,7 +127,7 @@ class VOSDataset(VisionDataset):
                         segment=segment,
                     )
                 )
-                images[frame_idx].boxes = boxes, # add by bryce
+            images[frame_idx].boxes = boxes, # add by bryce
             images[frame_idx].image_classify = int(image_classify_gt)
         return VideoDatapoint(
             frames=images,

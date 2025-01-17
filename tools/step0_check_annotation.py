@@ -1,10 +1,7 @@
 import os
 import shutil
 import json
-from PIL import Image, ImageDraw
 from tqdm import tqdm
-import random
-import matplotlib.pyplot as plt
 
 class_name_to_idx_map = {'51':0, '52':1, '53':2, '54':3, '55':4, 
                             '61':5, '62':6, '63':7, '64':8, '65':9, 
@@ -88,6 +85,7 @@ def check_and_resave_jsons(json_folder, save_folder):
         # print(src_json)
         with open(src_json, 'r') as f_json:
             json_data = json.load(f_json)
+        json_data['imageData'] = ''
         for _item in json_data['shapes']:
             if _item["shape_type"] == "rectangle":
                 if _item['label'].startswith('mouth'):
@@ -96,6 +94,7 @@ def check_and_resave_jsons(json_folder, save_folder):
                     else:
                         if int(_item['label'].split('_')[1]) > 7:
                             _item['label'] = 'mouth_7'
+                    # print(src_json)
                     assert len(_item['label'].split('_')) == 2
                     assert _item['label'].split('_')[0] == 'mouth'
                     assert int(_item['label'].split('_')[1]) > 0 and int(_item['label'].split('_')[1]) <= 7
@@ -121,6 +120,7 @@ def check_and_resave_jsons(json_folder, save_folder):
                     if class_name in class_name_to_idx_map.keys():
                         _item['label'] = class_name
                     else:
+                        print(src_json)
                         print(_item['label'] + " is bad class name !!!")
                 elif '/' in _item['label'] or '\\' in _item['label']:
                     class_name = 'doubleteeth'
@@ -134,7 +134,7 @@ def check_and_resave_jsons(json_folder, save_folder):
         with open(os.path.join(save_folder, _json) ,"w") as f_w:
             json.dump(json_data, f_w)
     if len(class_set) != 6:
-        print(json_folder + ' is less than 7 classes !!! Pls fixed it !!!')
+        print(json_folder + ' is less than 6 classes !!! Pls fixed it !!!')
         # import pdb; pdb.set_trace()
 
 
@@ -171,16 +171,13 @@ def organize_data(root_dir):
                     os.makedirs(json_save_dir, exist_ok=True)
                     check_and_resave_jsons(json_folder, json_save_dir)
 
-
 # 输入多个根目录路径
-# root_directories = ["/home/hust/haojing/dental_plague_dataset/10_8/", "/home/hust/haojing/dental_plague_dataset/10_10/"]
+root_directories = ["/home/jinghao/projects/dental_plague_detection/dataset/12_5/",]
 
 # root_directories = ["/home/hust/haojing/dental_plague_dataset/10_24", ]
-root_directories = '/home/hust/haojing/dental_plague_dataset/raw_data'
+# root_directories = '/home/hust/haojing/dental_plague_dataset/raw_data'
 # resaved_json_dir = '/home/hust/haojing/dental_plague_dataset/raw_data/resaved_json'
 
-for root_dir in os.listdir(root_directories):
-    single_path = os.path.join(root_directories, root_dir)
-    organize_data(single_path)
-
-
+for root_dir in root_directories:
+    # single_path = os.path.join(root_directories, root_dir)
+    organize_data(root_dir)

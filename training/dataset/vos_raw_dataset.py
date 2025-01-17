@@ -117,7 +117,7 @@ class PNGRawDataset(VOSRawDataset):
         Given a VOSVideo object, return the mask tensors.
         """
         video_name = self.video_names[idx]
-
+        # print(video_name)
         if self.single_object_mode:
             video_frame_root = os.path.join(
                 self.img_folder, os.path.dirname(video_name)

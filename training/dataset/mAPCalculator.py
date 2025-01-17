@@ -23,7 +23,14 @@ class MAPCalculator:
                 pred["labels"] = torch.zeros_like(pred["labels"])  # 将预测框的类别设置为 0
             for target in targets:
                 target["labels"] = torch.zeros_like(target["labels"])  # 将标注框的类别设置为 0
-
+        # print('label')
+        # for pred in preds:
+        #     print(pred["labels"])
+        #     print(pred["boxes"])
+        # print('target')
+        # for target in targets:
+        #     print(target["labels"])
+        #     print(target["boxes"])
         self.all_predictions.extend(preds)
         self.all_targets.extend(targets)
 
