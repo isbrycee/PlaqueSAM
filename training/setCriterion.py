@@ -324,7 +324,7 @@ class ImageClassificationLoss(nn.Module):
         self.weight_dict = {'loss_image_classify': class_weights}
     def forward(self, outputs, targets):
         device = outputs.device
-        targets = targets.to(device)
+        # targets = targets.to(device)
 
         if self.class_weights_for_each_class is not None:
             loss_fn = nn.CrossEntropyLoss(weight=self.class_weights_for_each_class)

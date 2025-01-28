@@ -148,8 +148,8 @@ class MaskDecoder(nn.Module):
             iou_pred = iou_pred[:, 1:]
         elif self.dynamic_multimask_via_stability and not self.training:
             masks, iou_pred = self._dynamic_multimask_via_stability(masks, iou_pred)
-        else:
-            masks = masks[:, 0:1, :, :]
+        else: # here
+            masks = masks[:, 0:1, :, :] # (3, 1, 256, 256)
             iou_pred = iou_pred[:, 0:1]
 
         if multimask_output and self.use_multimask_token_for_obj_ptr:
@@ -194,7 +194,7 @@ class MaskDecoder(nn.Module):
         output_tokens = output_tokens.unsqueeze(0).expand(
             sparse_prompt_embeddings.size(0), -1, -1
         )
-        tokens = torch.cat((output_tokens, sparse_prompt_embeddings), dim=1) # [1, 8, 256]
+        tokens = torch.cat((output_tokens, sparse_prompt_embeddings), dim=1) # [1, 18(6+12), 256]
 
         # Expand per-image data in batch direction to be per-mask
         if repeat_image:
@@ -210,8 +210,8 @@ class MaskDecoder(nn.Module):
         b, c, h, w = src.shape
 
         # Run the transformer
-        hs, src = self.transformer(src, pos_src, tokens)
-        iou_token_out = hs[:, s, :]
+        hs, src = self.transformer(src, pos_src, tokens) # (3, 18, 256); (3, 4096, 256)
+        iou_token_out = hs[:, s, :] # s=1
         mask_tokens_out = hs[:, s + 1 : (s + 1 + self.num_mask_tokens), :] # (3, 4, 256)
 
         # Upscale mask embeddings and predict masks using the mask tokens
@@ -231,7 +231,7 @@ class MaskDecoder(nn.Module):
             )
         hyper_in = torch.stack(hyper_in_list, dim=1) # (3, 4, 32)
         b, c, h, w = upscaled_embedding.shape
-        masks = (hyper_in @ upscaled_embedding.view(b, c, h * w)).view(b, -1, h, w) # (3, 4, 64, 64)
+        masks = (hyper_in @ upscaled_embedding.view(b, c, h * w)).view(b, -1, h, w) # (3, 4, 256, 256)
 
         # Generate mask quality predictions
         iou_pred = self.iou_prediction_head(iou_token_out) # (3, 4) for quality 

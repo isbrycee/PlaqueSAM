@@ -32,6 +32,7 @@ class BoxDecoder(nn.Module):
         activation="relu",
         num_feature_levels=1,
         nhead=8,
+        enc_n_points=4,
         dec_n_points=4,
         key_aware_type=None,
         decoder_sa_type='sa',
@@ -49,20 +50,24 @@ class BoxDecoder(nn.Module):
         self.num_frames = num_frames
         self.num_queries = num_queries
         self.random_refpoints_xy = True
-        assert (
-            self.num_classes == 30
-        ), f"The number of classes must be 30 ! Current setting is : {self.num_classes}. "
+        self.num_feature_levels = num_feature_levels
+        # assert (
+        #     self.num_classes == 30
+        # ), f"The number of classes must be 30 ! Current setting is : {self.num_classes}. "
 
         # prepare queries
         self.tgt_embed = nn.Embedding(self.num_queries, self.hidden_dim)
         nn.init.normal_(self.tgt_embed.weight.data)
 
-        self.refpoint_embed = nn.Embedding(self.num_queries, 4)
-        if self.random_refpoints_xy:
-            self.refpoint_embed.weight.data[:, :2].uniform_(0,1)
-            self.refpoint_embed.weight.data[:, :2] = inverse_sigmoid(self.refpoint_embed.weight.data[:, :2])
-            self.refpoint_embed.weight.data[:, :2].requires_grad = False
+        # self.refpoint_embed = nn.Embedding(self.num_queries, 4)
+        # if self.random_refpoints_xy:
+        #     self.refpoint_embed.weight.data[:, :2].uniform_(0,1)
+        #     self.refpoint_embed.weight.data[:, :2] = inverse_sigmoid(self.refpoint_embed.weight.data[:, :2])
+        #     self.refpoint_embed.weight.data[:, :2].requires_grad = False
 
+        self.query_dim = 4
+        self.init_ref_points(self.num_queries)
+        
         # prepare decoder model
         decoder_layer = DeformableTransformerDecoderLayer(self.hidden_dim, dim_feedforward,
                                                           dropout, activation,
@@ -105,9 +110,87 @@ class BoxDecoder(nn.Module):
         self.prior_loc_templates_npy_input_path = prior_loc_templates_npy_input_path
         self.is_use_prior_loc_templates = is_use_prior_loc_templates
 
-        self.fpn_channel_proj = [nn.Conv2d(32, 256, kernel_size=1),
-                                 nn.Conv2d(64, 256, kernel_size=1),
-                                 nn.Conv2d(256, 256, kernel_size=1)]
+        # for generate 4 scale fests similarly in DINO
+        self.fpn_channel_proj_32 = nn.Sequential(
+            nn.Conv2d(
+                32,
+                hidden_dim,
+                kernel_size=1,
+                bias=False,
+            ),
+            nn.BatchNorm2d(hidden_dim),
+            nn.Conv2d(
+                hidden_dim,
+                hidden_dim,
+                kernel_size=3,
+                padding=1,
+                bias=False,
+            ),
+            nn.BatchNorm2d(hidden_dim),
+        )
+
+        self.fpn_channel_proj_64 = nn.Sequential(
+            nn.Conv2d(
+                64,
+                hidden_dim,
+                kernel_size=1,
+                bias=False,
+            ),
+            nn.BatchNorm2d(hidden_dim),
+            nn.Conv2d(
+                hidden_dim,
+                hidden_dim,
+                kernel_size=3,
+                padding=1,
+                bias=False,
+            ),
+            nn.BatchNorm2d(hidden_dim),
+        )
+
+        self.fpn_channel_proj_256 = nn.Sequential(
+            nn.Conv2d(
+                256,
+                hidden_dim,
+                kernel_size=1,
+                bias=False,
+            ),
+            nn.BatchNorm2d(hidden_dim),
+            nn.Conv2d(
+                hidden_dim,
+                hidden_dim,
+                kernel_size=3,
+                padding=1,
+                bias=False,
+            ),
+            nn.BatchNorm2d(hidden_dim),
+        )
+
+        self.fpn_channel_proj = nn.ModuleList([self.fpn_channel_proj_32, self.fpn_channel_proj_64, self.fpn_channel_proj_256])
+        self.neck_generate_two_more_scales_feats = nn.ModuleList([
+            nn.Sequential(
+                nn.MaxPool2d(kernel_size=2, stride=2),                                               
+                nn.Conv2d(
+                    hidden_dim,
+                    hidden_dim,
+                    kernel_size=3,
+                    padding=1,
+                    bias=False,
+                ),
+                nn.BatchNorm2d(hidden_dim),
+            ),
+            nn.Sequential(
+                nn.MaxPool2d(kernel_size=2, stride=2),                                               
+                nn.Conv2d(
+                    hidden_dim,
+                    hidden_dim,
+                    kernel_size=3,
+                    padding=1,
+                    bias=False,
+                ),
+                nn.BatchNorm2d(hidden_dim),
+            ),
+        ])
+
 
         if self.is_use_prior_loc_templates and self.prior_loc_templates_npy_input_path and len(os.listdir(self.prior_loc_templates_npy_input_path)) == 6:
             prior_loc_feas_list = []
@@ -119,15 +202,20 @@ class BoxDecoder(nn.Module):
         else:
             self.prior_loc_feas = None
 
+    def init_ref_points(self, use_num_queries):
+        self.refpoint_embed = nn.Embedding(use_num_queries, self.query_dim)
+        if self.random_refpoints_xy:
+
+            self.refpoint_embed.weight.data[:, :2].uniform_(0,1)
+            self.refpoint_embed.weight.data[:, :2] = inverse_sigmoid(self.refpoint_embed.weight.data[:, :2])
+            self.refpoint_embed.weight.data[:, :2].requires_grad = False
+        
     def _prepare_backbone_features(self, backbone_out):
         """Prepare and flatten visual features."""
         backbone_out = backbone_out.copy()
         assert len(backbone_out["backbone_fpn"]) == len(backbone_out["vision_pos_enc"])
         device = backbone_out["vision_pos_enc"][0].device
-        num_level_feats = len(backbone_out["backbone_fpn"])
-        level_feats_start_id = 2 # drop the first (high-resolution) and second feature maps since GPU oom
-        feat_sizes = [(x.shape[-2], x.shape[-1]) for x in backbone_out["vision_pos_enc"]][level_feats_start_id:]
-
+        
         # flatten NxCxHxW to HWxNxC
         vision_feats = []
         len_feat_list = []
@@ -135,11 +223,20 @@ class BoxDecoder(nn.Module):
             vision_feats.append(self.fpn_channel_proj[id].cuda()(vision_feat)+vision_pos_embed)
             len_feat_list.append(vision_feats[-1].shape[-2] * vision_feats[-1].shape[-1])
         
+        for i, op_conv in enumerate(self.neck_generate_two_more_scales_feats):
+            feats_more_scales = op_conv(vision_feats[-1])
+            vision_feats.append(feats_more_scales)
+            len_feat_list.append(vision_feats[-1].shape[-2] * vision_feats[-1].shape[-1])
+
+        all_num_level_feats = len(vision_feats)
+        level_feats_start_id = all_num_level_feats - self.num_feature_levels # drop the first (high-resolution) and second feature maps since GPU oom
+        feat_sizes = [(x.shape[-2], x.shape[-1]) for x in vision_feats][level_feats_start_id:]
+        
         len_feat_list = [0] + len_feat_list[level_feats_start_id:]
-        level_start_index = torch.tensor(np.cumsum(np.array(len_feat_list)).tolist()[:num_level_feats-level_feats_start_id]).to(device)
+        level_start_index = torch.tensor(np.cumsum(np.array(len_feat_list)).tolist()[:all_num_level_feats-level_feats_start_id]).to(device)
         spatial_shapes = torch.tensor(feat_sizes).to(device)
         bs, _, _, _ = backbone_out["backbone_fpn"][0].shape
-        valid_ratios = torch.ones(bs, num_level_feats-level_feats_start_id, 2).to(device)
+        valid_ratios = torch.ones(bs, all_num_level_feats-level_feats_start_id, 2).to(device)
 
         # flatten NxCxHxW to HWxNxC
         memories = [x.flatten(2).permute(2, 0, 1) for x in vision_feats[level_feats_start_id:]]
@@ -162,8 +259,8 @@ class BoxDecoder(nn.Module):
         # for i in range (img_feature.shape[0]):
         #     img_fea_with_pos.append(img_feature[i]+img_pos[i])
         
-        tgt_ = self.tgt_embed.weight[:, None, :].repeat(1, bs, 1).transpose(0, 1) # nq, bs, d_model
-        refpoint_embed_ = self.refpoint_embed.weight[:, None, :].repeat(1, bs, 1).transpose(0, 1) # nq, bs, 4
+        tgt_ = self.tgt_embed.weight[:, None, :].repeat(1, bs, 1).transpose(0, 1).contiguous() # nq, bs, d_model
+        refpoint_embed_ = self.refpoint_embed.weight[:, None, :].repeat(1, bs, 1).transpose(0, 1).contiguous() # nq, bs, 4
         # init_box_proposal = refpoint_embed_.sigmoid()
         refpoint_embed, tgt = refpoint_embed_, tgt_
         mask_flatten = None
@@ -172,11 +269,11 @@ class BoxDecoder(nn.Module):
         # level_start_index = torch.tensor(0,).to(device)
 
         hs, references = self.decoder(
-                tgt=tgt.transpose(0, 1), # query 
+                tgt=tgt.transpose(0, 1).contiguous(), # query 
                 memory=memories, # image feature, note here, the memory format is [hw, bs, d_model]
                 memory_key_padding_mask=mask_flatten, 
                 pos=None,
-                refpoints_unsigmoid=refpoint_embed.transpose(0, 1), 
+                refpoints_unsigmoid=refpoint_embed.transpose(0, 1).contiguous(), 
                 level_start_index=level_start_index, 
                 spatial_shapes=spatial_shapes,
                 valid_ratios=valid_ratios,
@@ -190,7 +287,7 @@ class BoxDecoder(nn.Module):
             layer_outputs_unsig = layer_outputs_unsig.sigmoid()
             outputs_coord_list.append(layer_outputs_unsig)
         outputs_coord_list = torch.stack(outputs_coord_list)
-    
+        
         outputs_class_list = torch.stack([layer_cls_embed(layer_hs) for
                                      layer_cls_embed, layer_hs in zip(self.class_embed, hs)])
         
@@ -383,8 +480,8 @@ class TransformerDecoder(nn.Module):
                     output = torch.gather(output, 0, topk_proposals.unsqueeze(-1).repeat(1, 1, self.d_model)) # unsigmoid
 
         return [
-            [itm_out.transpose(0, 1) for itm_out in intermediate],
-            [itm_refpoint.transpose(0, 1) for itm_refpoint in ref_points]
+            [itm_out.transpose(0, 1).contiguous() for itm_out in intermediate],
+            [itm_refpoint.transpose(0, 1).contiguous() for itm_refpoint in ref_points]
         ]
 
 
@@ -435,7 +532,8 @@ class DeformableTransformerDecoderLayer(nn.Module):
             self.self_attn = nn.MultiheadAttention(d_model, n_heads)
 
         # add by bryce; for prior loc cross attention
-        if is_use_prior_loc_templates:
+        self.is_use_prior_loc_templates = is_use_prior_loc_templates
+        if self.is_use_prior_loc_templates:
             if use_deformable_box_attn: # changed by bryce; note change back !!!
                 # self.cross_attn = MSDeformableBoxAttention(d_model, n_levels, n_heads, n_boxes=n_points, used_func=box_attn_type)
                 self.prior_loc_cross_attn = nn.MultiheadAttention(d_model, n_heads)
@@ -495,9 +593,9 @@ class DeformableTransformerDecoderLayer(nn.Module):
                 tgt = tgt + self.dropout2(tgt2)
                 tgt = self.norm2(tgt)
             elif self.decoder_sa_type == 'ca_content':
-                tgt2 = self.self_attn(self.with_pos_embed(tgt, tgt_query_pos).transpose(0, 1),
+                tgt2 = self.self_attn(self.with_pos_embed(tgt, tgt_query_pos).transpose(0, 1).contiguous(),
                             tgt_reference_points.transpose(0, 1).contiguous(),
-                            memory.transpose(0, 1), memory_spatial_shapes, memory_level_start_index, memory_key_padding_mask).transpose(0, 1)
+                            memory.transpose(0, 1).contiguous(), memory_spatial_shapes, memory_level_start_index, memory_key_padding_mask).transpose(0, 1).contiguous()
                 tgt = tgt + self.dropout2(tgt2)
                 tgt = self.norm2(tgt)
             else:
@@ -540,13 +638,13 @@ class DeformableTransformerDecoderLayer(nn.Module):
         # tgt2 = self.cross_attn(self.with_pos_embed(tgt, tgt_query_pos).transpose(0, 1),
         #                        tgt_reference_points.transpose(0, 1).contiguous(),
         #                        memory.transpose(0, 1), memory_spatial_shapes, memory_level_start_index, memory_key_padding_mask.bool()).transpose(0, 1)
-        tgt2 = self.cross_attn(self.with_pos_embed(tgt, tgt_query_pos).transpose(0, 1), # (6, 100, 256)
+        tgt2 = self.cross_attn(self.with_pos_embed(tgt, tgt_query_pos).transpose(0, 1).contiguous(), # (6, 100, 256)
                                 tgt_reference_points.transpose(0, 1).contiguous(),
-                                memory.transpose(0, 1), # (6, 4096, 256)
+                                memory.transpose(0, 1).contiguous(), # (6, 4096, 256)
                                 memory_spatial_shapes, # (1, 2)
                                 memory_level_start_index, # tensor(0, device='cuda:0')
                                 memory_key_padding_mask # (6, 4096)
-                                ).transpose(0, 1)
+                                ).transpose(0, 1).contiguous()
         tgt = tgt + self.dropout1(tgt2)
         tgt = self.norm1(tgt)
 
@@ -556,11 +654,23 @@ class DeformableTransformerDecoderLayer(nn.Module):
                 # for tgt
                 tgt: Optional[Tensor],  # nq, bs, d_model
                 tgt_query_pos: Optional[Tensor] = None, # pos for query. MLP(Sine(pos))
+                adapted_prior_loc_feas: Optional[Tensor] = None,
+                tgt_query_sine_embed: Optional[Tensor] = None, # pos for query. Sine(pos)
+                tgt_key_padding_mask: Optional[Tensor] = None,
+                tgt_reference_points: Optional[Tensor] = None, # nq, bs, 4
 
                 # for memory
                 memory: Optional[Tensor] = None, # hw, bs, d_model
+                memory_key_padding_mask: Optional[Tensor] = None,
+                memory_level_start_index: Optional[Tensor] = None, # num_levels
+                memory_spatial_shapes: Optional[Tensor] = None, # bs, num_levels, 2
+                memory_pos: Optional[Tensor] = None, # pos for memory
+
+                # sa
+                self_attn_mask: Optional[Tensor] = None, # mask used for self-attention
+                cross_attn_mask: Optional[Tensor] = None, # mask used for cross-attention
             ):
-        if memory is None:
+        if memory is None or not self.is_use_prior_loc_templates:
             return tgt
         
         # cross attention
@@ -576,10 +686,10 @@ class DeformableTransformerDecoderLayer(nn.Module):
         device = tgt.device
         memory = self.prior_loc_adapter(memory.to(device)).permute(1,0,2).contiguous()
         # change by bryce; note change back !!!
-        tgt2, tgt2_attn_weights  = self.prior_loc_cross_attn(self.with_pos_embed(tgt, tgt_query_pos), memory, memory)
-        # tgt2 = self.cross_attn(self.with_pos_embed(tgt, tgt_query_pos).transpose(0, 1),
-        #                        tgt_reference_points.transpose(0, 1).contiguous(),
-        #                        memory.transpose(0, 1), memory_spatial_shapes, memory_level_start_index, memory_key_padding_mask.bool()).transpose(0, 1)
+        # tgt2, tgt2_attn_weights  = self.prior_loc_cross_attn(self.with_pos_embed(tgt, tgt_query_pos), memory, memory)
+        tgt2 = self.cross_attn(self.with_pos_embed(tgt, tgt_query_pos).transpose(0, 1).contiguous(),
+                               tgt_reference_points.transpose(0, 1).contiguous(),
+                               memory, memory_spatial_shapes, memory_level_start_index, memory_key_padding_mask).transpose(0, 1).contiguous()
         tgt = tgt + self.dropout4(tgt2)
         tgt = self.norm4(tgt)
 
@@ -622,9 +732,13 @@ class DeformableTransformerDecoderLayer(nn.Module):
                         memory, memory_key_padding_mask, memory_level_start_index, \
                             memory_spatial_shapes, memory_pos, self_attn_mask, cross_attn_mask)
             elif funcname == 'plca':
-                continue
+                # continue
                 tgt = self.forward_plca(tgt, tgt_query_pos, \
-                        adapted_prior_loc_feas
+                        adapted_prior_loc_feas, 
+                        tgt_query_sine_embed, \
+                        tgt_key_padding_mask, tgt_reference_points, \
+                        memory, memory_key_padding_mask, memory_level_start_index, \
+                        memory_spatial_shapes, memory_pos, self_attn_mask, cross_attn_mask
                         )
             else:
                 raise ValueError('unknown funcname {}'.format(funcname))

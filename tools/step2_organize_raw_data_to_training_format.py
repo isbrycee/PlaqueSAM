@@ -163,7 +163,6 @@ def organize_data(root_dir, new_folder):
                             bottom_right = points[1]
                         else:
                             print("bad images and anno:", img_path)
-                            
                         
                         top_left, bottom_right = correct_coordinates(top_left, bottom_right)
                         # Crop image
@@ -196,15 +195,10 @@ def organize_data(root_dir, new_folder):
 
 # 输入多个根目录路径
 # root_directories = ["/home/hust/haojing/dental_plague_dataset/10_8/", "/home/hust/haojing/dental_plague_dataset/10_10/"]
-root_directories = ["/home/jinghao/projects/dental_plague_detection/dataset/11_3/", 
-                    "/home/jinghao/projects/dental_plague_detection/dataset/11_7/", 
-                    "/home/jinghao/projects/dental_plague_detection/dataset/11_12/", 
-                    "/home/jinghao/projects/dental_plague_detection/dataset/11_19/",
-                    "/home/jinghao/projects/dental_plague_detection/dataset/11_20/", 
-                    "/home/jinghao/projects/dental_plague_detection/dataset/12_3/",
-                    "/home/jinghao/projects/dental_plague_detection/dataset/12_5/", ]
+root_directories = ['/home/jinghao/projects/dental_plague_detection/dataset/27_1_2025_revision/12_5/',
+                    '/home/jinghao/projects/dental_plague_detection/dataset/27_1_2025_revision/9_26/' ]
 
-save_root_path = '/home/jinghao/projects/dental_plague_detection/dataset/plague_for_training_11_12'
+save_root_path = '/home/jinghao/projects/dental_plague_detection/dataset/plague_for_training_revised_27_1/'
 
 for root_dir in root_directories:
     organize_data(root_dir, save_root_path)

@@ -30,6 +30,7 @@ class BatchedVideoMetaData:
 
     unique_objects_identifier: torch.LongTensor
     frame_orig_size: torch.LongTensor
+    video_name: str
 
 
 @tensorclass
@@ -47,6 +48,7 @@ class BatchedVideoDatapoint:
     img_batch: torch.FloatTensor
     obj_to_frame_idx: torch.IntTensor
     masks: torch.BoolTensor
+    masks_for_semantic_seg: torch.IntTensor # add by bryce
     boxes: dict # id: box[[x1, y1], [x2, y2]] # add by bryce
     image_classify: list
     metadata: BatchedVideoMetaData
@@ -114,6 +116,7 @@ class VideoDatapoint:
     frames: List[Frame]
     video_id: int
     size: Tuple[int, int]
+    video_name: str
 
 
 def collate_fn(
@@ -193,7 +196,7 @@ def collate_fn(
                             '84_crown':29,
                             '74_crown':29,
                             
-                            '110': 20,
+                            '110': 81,
                             "55'":4,
                             '622':6,
                             '585':19,
@@ -204,7 +207,6 @@ def collate_fn(
                             '82/83':28,
                             '81/82': 28,
                             }
-
 
 
     for video_idx, video in enumerate(batch):
@@ -222,7 +224,6 @@ def collate_fn(
             for sublist in meta_box_info.keys():
                 if '_' in sublist:
                     sublist = sublist.split('_')[0]
-
             merged_meta_class_info = [class_name_to_idx_map[sublist] for sublist in meta_box_info.keys()]
             merged_meta_class_info = torch.tensor(merged_meta_class_info, dtype=torch.int64)
             # step_t_boxes[t] = merged_meta_box_info.reshape(-1, 2, 2)
@@ -249,6 +250,7 @@ def collate_fn(
         dim=0,
     )
     masks = torch.stack([torch.stack(masks, dim=0) for masks in step_t_masks], dim=0)
+    masks_for_semantic_seg = torch.argmax(masks.float(), dim=1, keepdim=True)
     objects_identifier = torch.stack(
         [torch.stack(id, dim=0) for id in step_t_objects_identifier], dim=0
     )
@@ -262,11 +264,13 @@ def collate_fn(
         img_batch=img_batch,
         obj_to_frame_idx=obj_to_frame_idx,
         masks=masks,
+        masks_for_semantic_seg=masks_for_semantic_seg,
         boxes=boxes, # add by bryce
         image_classify=image_classify, # add by bryce
         metadata=BatchedVideoMetaData(
             unique_objects_identifier=objects_identifier,
             frame_orig_size=frame_orig_size,
+            video_name=video.video_name,
         ),
         dict_key=dict_key,
         batch_size=[T],

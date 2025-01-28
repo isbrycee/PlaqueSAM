@@ -24,6 +24,9 @@ from training.utils.data_utils import BatchedVideoDatapoint
 
 from sam2.modeling.box_decoder import PostProcess
 
+import sys   
+sys.setrecursionlimit(10000)
+
 class SAM2Train(SAM2Base):
     def __init__(
         self,
@@ -139,11 +142,12 @@ class SAM2Train(SAM2Base):
         # indices_to_remove = [i for i, value in enumerate(input.image_classify) if value == 6]
         if phase == 'train':
             indices_to_reserve = [i for i, value in enumerate(input.image_classify) if value != 6]
+            pred_image_classify_processed = None
         elif phase == 'val':
             pred_image_classifiy = pred_image_classifiy_logits.argmax(dim=1).tolist()
-            indices_to_reserve = [i for i, value in enumerate(pred_image_classifiy) if value != 6]
+            pred_image_classify_scores = torch.nn.functional.softmax(pred_image_classifiy_logits, dim=-1)
             # indices post-processing
-            indices_to_reserve = self._post_processing_reserved_indices(indices_to_reserve, self.num_frames, self.num_frames_with_invalid)
+            pred_image_classify_processed, indices_to_reserve= self._post_processing_reserved_indices(pred_image_classify_scores, self.num_frames, self.num_frames_with_invalid)
 
         assert len(indices_to_reserve) == 6
         backbone_out['vision_features'] = backbone_out['vision_features'][indices_to_reserve]
@@ -169,7 +173,7 @@ class SAM2Train(SAM2Base):
 
         previous_stages_out = self.forward_tracking(backbone_out, input)
 
-        return previous_stages_out, backbone_out, pred_image_classifiy_logits, indices_to_reserve
+        return previous_stages_out, backbone_out, pred_image_classifiy_logits, pred_image_classify_processed, indices_to_reserve
 
 
     def _prepare_backbone_features_per_frame(self, img_batch, img_ids):
@@ -750,20 +754,70 @@ class SAM2Train(SAM2Base):
         current_out["multistep_object_score_logits"] = all_object_score_logits
 
         return point_inputs, sam_outputs
+    
+    def _post_processing_reserved_indices(self, pred_image_classify_scores, num_frames, num_frames_with_invalid):
 
-    def _post_processing_reserved_indices(self, indices_to_reserve, num_frames, num_frames_with_invalid):
-        # Ensure uniqueness of elements
-        unique_indices = list(set(indices_to_reserve))
-
-        # If the length is less than 6, randomly choose numbers from 0 to 7 that are not already in indices_to_reserve
-        if len(unique_indices) < num_frames:
-            available_indices = list(set(range(num_frames_with_invalid)) - set(unique_indices))
-            while len(unique_indices) < num_frames:
-                unique_indices.append(random.choice(available_indices))
+        # Initialize the final predictions
+        final_classes = torch.argmax(pred_image_classify_scores, dim=1)
+        # print(final_classes)
         
-        # If the length exceeds 6, randomly remove elements to make the length 6
-        elif len(unique_indices) > num_frames:
-            random.shuffle(unique_indices)
-            unique_indices = unique_indices[:num_frames]
+        # 第二步：处理第 6 类的数量
+        # 统计当前第 6 类的数量
+        num_class_6 = (final_classes == num_frames).sum().item()
+        
+        # 如果第 6 类的数量大于 2，则需要调整
+        if num_class_6 > (num_frames_with_invalid-num_frames):
+            # 找到所有预测为第 6 类的图片索引
+            class_6_indices = torch.where(final_classes == num_frames)[0]
+            
+            # 将这些图片的类别修改为 score 第二大的类别
+            for idx in class_6_indices[:num_class_6 - 2]:
+                # 获取 score 第二大的类别
+                second_max_class = torch.argsort(pred_image_classify_scores[idx], descending=True)[1]
+                final_classes[idx] = second_max_class
+        
+        # 第三步：处理非第 6 类的重复类别
+        # 统计每个类别出现的次数
+        class_counts = torch.bincount(final_classes, minlength=7)
+        
+        # 检查是否有重复的类别（0～5 类）
+        for class_id in range(num_frames):
+            if class_counts[class_id] > 1:
+                # 找到所有预测为该类别的图片索引
+                class_indices = torch.where(final_classes == class_id)[0]
+                
+                # 排除高置信度的图片
+                # class_indices = class_indices[~torch.isin(class_indices, high_conf_indices)]
+                
+                # 保留 score 最大的图片，其余的修改为 0～5 中还没有出现的类别
+                max_score_idx = class_indices[torch.argmax(pred_image_classify_scores[class_indices, class_id])]
+                for idx in class_indices:
+                    if idx != max_score_idx:
+                        # 找到 0～5 中还没有出现的类别
+                        available_classes = torch.where(class_counts[:num_frames] == 0)[0]
+                        if len(available_classes) > 0:
+                            final_classes[idx] = available_classes[0]
+                            class_counts[available_classes[0]] += 1
+                        else:
+                            # 如果没有可用的类别，则将其修改为第 6 类
+                            final_classes[idx] = 6
+                            class_counts[6] += 1
 
-        return unique_indices
+        indices_to_reserve = [i for i, value in enumerate(final_classes) if value != 6]
+        if len(indices_to_reserve) < 6:
+             # 获取所有值为 6 的元素的索引
+            indices_of_sixes = [i for i, value in enumerate(final_classes) if value == 6]
+            
+            # 根据 scores 对这些索引进行排序，选择分数最低的
+            sorted_indices_of_sixes = sorted(indices_of_sixes, key=lambda x: pred_image_classify_scores[x])
+            
+            # 计算需要填补的数量
+            num_to_fill = 6 - len(indices_to_reserve)
+            
+            # 填补 indices_to_reserve
+            indices_to_reserve.extend(sorted_indices_of_sixes[:num_to_fill])
+
+        # print(final_classes)
+        # print(pred_image_classify_scores)
+
+        return final_classes, indices_to_reserve

@@ -72,7 +72,7 @@ class SubmititRunner(submitit.helpers.Checkpointable):
         self.cfg = cfg
         self.port = port
         self.has_setup = False
-
+    
     def run_trainer(self):
         job_env = submitit.JobEnvironment()
         # Need to add this again so the hydra.job.set_env PYTHONPATH

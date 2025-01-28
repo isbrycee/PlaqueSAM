@@ -60,6 +60,7 @@ from setCriterion import SetCriterion, HungarianMatcher, ImageClassificationLoss
 from sam2.modeling.box_decoder import PostProcess
 from dataset.mAPCalculator import MAPCalculator
 from torchmetrics.classification import MulticlassJaccardIndex, Accuracy
+from utils.MaskAP_instance_metrics import InstanceSegmentationMetric
 from training.utils.box_ops import box_norm_cxcywh_to_unnorm_xyxy, box_normalize_xyxy_to_cxcywh
 
 CORE_LOSS_KEY = "core_loss"
@@ -464,9 +465,10 @@ class Trainer:
         return epoch % self.val_epoch_freq == 0 and epoch < self.max_epochs - 1
 
     def _get_pred_classification_info_for_evaluate(self, outputs_for_image_classify, targets_image_classify):
-        pred_classes = torch.argmax(outputs_for_image_classify, dim=1) 
+        # pred_classes = torch.argmax(outputs_for_image_classify, dim=1)
+        pred_image_classify_processed = outputs_for_image_classify.to(self.device)
         targets_classes = targets_image_classify.to(self.device)
-        return pred_classes, targets_classes
+        return pred_image_classify_processed, targets_classes
         
 
     def _get_pred_masks_info_for_evaluate(self, outputs_for_masks, gt_for_masks, score_threshod=0.5):
@@ -499,6 +501,20 @@ class Trainer:
         gt_masks_for_eval = torch.argmax(gt_masks_for_eval, dim=1) # (6, 256, 256) [0,1,2,3]
 
         return pred_masks_for_eval, gt_masks_for_eval
+
+
+    def _get_pred_masks_info_for_evaluate_semantic_Seg(self, outputs_for_masks, gt_for_masks, score_threshod=0.5):
+        masks_pred_list = []
+        for pred_mask_logits in outputs_for_masks:
+            pred_mask_softmax = F.softmax(pred_mask_logits['pred_masks_high_res'].squeeze(1), dim=0)
+            pred_mask = torch.argmax(pred_mask_softmax, dim=0)
+            masks_pred_list.append(pred_mask)
+            
+        # for pred
+        pred_masks_for_eval = torch.stack(masks_pred_list, dim=0).int()
+
+        return pred_masks_for_eval, gt_for_masks.squeeze(1) # (); (6, 1024, 1024)
+    
 
     def _get_pred_boxes_info_for_evaluate(self, outputs_for_boxes, gt_for_boxes, score_threshod=0.5):
         
@@ -542,9 +558,9 @@ class Trainer:
         model: nn.Module,
         phase: str,
     ):
-        outputs, outputs_for_boxes, outputs_for_image_classify, indices_to_reserve = model(batch, phase)
+        outputs, outputs_for_boxes, pred_image_classifiy_logits, pred_image_classify_processed, indices_to_reserve = model(batch, phase)
         targets = batch.masks[indices_to_reserve] # (6, 3, 256, 256)
-        
+        targets_for_semantic_seg = batch.masks_for_semantic_seg[indices_to_reserve].to(torch.int64)
         # for visualize gt mask
         # import matplotlib.pyplot as plt
         # ================================ for visual gt ================================
@@ -577,7 +593,8 @@ class Trainer:
         batch_size = targets.shape[0]
         device = targets.device
         key = batch.dict_key  # key for dataset
-        loss = self.loss[key](outputs, targets)
+        # loss = self.loss[key](outputs, targets)
+        loss = self.loss[key](outputs, targets_for_semantic_seg) # add by bryce
         
         # add by bryce; loss for boxes & evaluation for box
         targets_boxes = [batch.boxes[indx] for indx in indices_to_reserve] # dict({0:size(9,2,2)})
@@ -611,8 +628,8 @@ class Trainer:
         # end
 
         # add by bryce; loss for image_classify
-        targets_image_classify = torch.tensor(batch.image_classify)
-        loss_image_classify = self.loss_for_image_classify(outputs_for_image_classify, targets_image_classify)
+        targets_image_classify = torch.tensor(batch.image_classify).to(device)
+        loss_image_classify = self.loss_for_image_classify(pred_image_classifiy_logits, targets_image_classify)
         for k, v in loss_image_classify.items():
             loss[k] = v
         # end
@@ -651,8 +668,12 @@ class Trainer:
             # plt.savefig("output.png", dpi=300, bbox_inches='tight')
             # plt.close()  # 关闭绘图窗口
             ############## end for box vis, check box ###################
-            preds_masks, targets_masks = self._get_pred_masks_info_for_evaluate(outputs, targets, self.model_conf.threshold_for_masks)
-            preds_classes, targets_classes = self._get_pred_classification_info_for_evaluate(outputs_for_image_classify, targets_image_classify)
+            # preds_masks, targets_masks = self._get_pred_masks_info_for_evaluate(outputs, targets, self.model_conf.threshold_for_masks)
+            preds_masks, targets_masks = self._get_pred_masks_info_for_evaluate_semantic_Seg(outputs, targets_for_semantic_seg, self.model_conf.threshold_for_masks)
+
+
+            
+            preds_classes, targets_classes = self._get_pred_classification_info_for_evaluate(pred_image_classify_processed, targets_image_classify)
         # 
         
         loss_str = f"Losses/{phase}_{key}_loss"
@@ -772,9 +793,6 @@ class Trainer:
         self.epoch -= 1
 
     def run_val(self):
-        # changed by bryce
-        # if not self.val_dataset:
-        #     return
 
         dataloader = self.val_dataset.get_loader(epoch=int(self.epoch))
         # add by bryce 
@@ -816,7 +834,7 @@ class Trainer:
             model.eval()
             if hasattr(unwrap_ddp_if_wrapped(model), "on_validation_epoch_start"):
                 unwrap_ddp_if_wrapped(model).on_validation_epoch_start()
-
+        
         progress = ProgressMeter(
             iters_per_epoch,
             [batch_time, data_time, mem, self.time_elapsed_meter, *loss_mts.values()],
@@ -828,8 +846,9 @@ class Trainer:
         # add by bryce 
         map_calculator = MAPCalculator(class_agnostic=self.val_boxes_class_agnostic)
         # +1 for background
-        mIoU_calculator = MulticlassJaccardIndex(num_classes=self.model_conf.num_classes_for_mask + 1, average=None).to(self.device)
+        mIoU_calculator = MulticlassJaccardIndex(num_classes=self.model_conf.num_classes_for_mask, average=None).to(self.device)
         accuracy_calculator = Accuracy(task="multiclass", num_classes=self.model_conf.image_classify_decoder.num_classes).to(self.device)
+        MaskmAP_calculator = InstanceSegmentationMetric(num_box_classes=30, num_mask_classes=self.model_conf.num_classes_for_mask, device=self.device)
 
         for data_iter, batch in enumerate(val_loader):
             # measure data loading time
@@ -855,7 +874,12 @@ class Trainer:
                         )
                         map_calculator.update(preds_boxes, targets_boxes) # add by bryce for compute mAP
                         mIoU_calculator.update(preds_masks, targets_masks) # add by bryce for compute mIoU
+                        # if not torch.equal(preds_classes, targets_classes):
+                        #     print(batch.metadata.video_name)
+                        #     print('pred:', preds_classes)
+                        #     print('target:', targets_classes)
                         accuracy_calculator.update(preds_classes, targets_classes) # add by bryce for compute image classification accuracy
+                        MaskmAP_calculator.update(preds_boxes, targets_boxes, preds_masks, targets_masks)
 
                         loss_dict, batch_size, extra_losses = ret_tuple
                         assert len(loss_dict) == 1
@@ -912,7 +936,6 @@ class Trainer:
         self._reset_meters(curr_phases)
         logging.info(f"Meters: {out_dict}")
 
-
         # add by bryce; for Metrics logging; for compute accuracy
         classification_acc_results = accuracy_calculator.compute()
         logging.info(f"Image Classification ACC Results: {classification_acc_results}")
@@ -925,6 +948,10 @@ class Trainer:
         logging.info(f"Mask IoU Results Per Class: {mask_mIoU_results_per_class}")
         logging.info(f"Mask Mean IoU (mIoU) Results: {mask_mIoU_results}")
         # print("Object Detection mAP Results:", box_map_results)
+
+        # add by bryce; for Metrics logging; for compute MaskmAP
+        box_MaskmAP_results = MaskmAP_calculator.compute()
+        logging.info(f"Instance Segmentation mAP Results: {box_MaskmAP_results}")
 
         # 表头和数据
         header = "|  Acc  |  mAP  |  mIoU  |"
@@ -1105,6 +1132,7 @@ class Trainer:
         # grads will also update a model even if the step doesn't produce
         # gradients
         self.optim.zero_grad(set_to_none=True)
+        # print(batch.metadata.video_name)
         with torch.cuda.amp.autocast(
             enabled=self.optim_conf.amp.enabled,
             dtype=get_amp_type(self.optim_conf.amp.amp_dtype),
@@ -1117,6 +1145,7 @@ class Trainer:
 
         assert len(loss_dict) == 1
         loss_key, loss = loss_dict.popitem()
+        
         print(loss)
 
         if not math.isfinite(loss.item()):

@@ -55,7 +55,7 @@ class VOSDataset(VisionDataset):
                 if isinstance(idx, torch.Tensor):
                     idx = idx.item()
                 # sample a video
-                video, segment_loader, bbox_loader = self.video_dataset.get_video(idx) # change by bryce
+                video, segment_loader, bbox_loader, video_name = self.video_dataset.get_video(idx) # change by bryce
                 # sample frames and object indices to be used in a datapoint
                 sampled_frms_and_objs = self.sampler.sample(
                     video, segment_loader, epoch=self.curr_epoch
@@ -71,12 +71,12 @@ class VOSDataset(VisionDataset):
                     # Shouldn't fail to load a val video
                     raise e
 
-        datapoint = self.construct(video, sampled_frms_and_objs, segment_loader, bbox_loader)
+        datapoint = self.construct(video, sampled_frms_and_objs, segment_loader, bbox_loader, video_name)
         for transform in self._transforms:
             datapoint = transform(datapoint, epoch=self.curr_epoch)
         return datapoint
 
-    def construct(self, video, sampled_frms_and_objs, segment_loader, bbox_loader):
+    def construct(self, video, sampled_frms_and_objs, segment_loader, bbox_loader, video_name):
         """
         Constructs a VideoDatapoint sample to pass to transforms
         """
@@ -133,6 +133,7 @@ class VOSDataset(VisionDataset):
             frames=images,
             video_id=video.video_id,
             size=(h, w),
+            video_name=video_name
         )
 
     def __getitem__(self, idx):

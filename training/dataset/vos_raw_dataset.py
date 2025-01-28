@@ -117,7 +117,7 @@ class PNGRawDataset(VOSRawDataset):
         Given a VOSVideo object, return the mask tensors.
         """
         video_name = self.video_names[idx]
-        # print(video_name)
+        
         if self.single_object_mode:
             video_frame_root = os.path.join(
                 self.img_folder, os.path.dirname(video_name)
@@ -145,7 +145,7 @@ class PNGRawDataset(VOSRawDataset):
             fid = int(os.path.basename(fpath).split(".")[0])
             frames.append(VOSFrame(fid, image_path=fpath))
         video = VOSVideo(video_name, idx, frames)
-        return video, segment_loader, bbox_loader
+        return video, segment_loader, bbox_loader, video_name
 
     def __len__(self):
         return len(self.video_names)

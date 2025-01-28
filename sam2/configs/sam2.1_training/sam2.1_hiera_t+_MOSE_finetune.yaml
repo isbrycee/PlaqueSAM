@@ -6,11 +6,11 @@ scratch:
   num_train_workers: 16
   num_frames: 6
   num_frames_with_invalid: 8
-  max_num_objects: 3
-  base_lr: 5.0e-5 # 5.0e-6
-  vision_lr: 3.0e-06 # 3.0e-06
+  max_num_objects: 4
+  base_lr: 3.0e-4 # 5.0e-6
+  vision_lr: 3.0e-04 # 3.0e-06
   phases_per_epoch: 1
-  num_epochs: 500
+  num_epochs: 100
 dataset_train:
   # PATHS to Dataset
   img_folder: /home/jinghao/projects/dental_plague_detection/dataset/train/JPEGImages/
@@ -24,7 +24,7 @@ dataset_test:
   gt_folder: /home/jinghao/projects/dental_plague_detection/dataset/test/Annotations/  # PATH to MOSE Annotations folder
   gt_box_folder: /home/jinghao/projects/dental_plague_detection/dataset/test/Json/ 
   file_list_txt: # training/assets/MOSE_sample_train_list.txt # Optional PATH to filelist containing a subset of videos to be used for training
-  multiplier: 2
+  multiplier: 1
 
 # Video transforms
 vos:
@@ -114,15 +114,17 @@ trainer:
       _target_: sam2.modeling.box_decoder.BoxDecoder
       input_dim: 256
       hidden_dim: 256
-      dec_n_points: 64
+      dec_n_points: 4
       dim_feedforward: 2048
       num_decoder_layers: 6
-      num_classes: 30
+      num_feature_levels: 4
+      num_queries: 900
+      num_classes: 31
       num_frames: ${scratch.num_frames}
       is_use_prior_loc_templates: False
       prior_loc_templates_npy_input_path: '/home/jinghao/projects/dental_plague_detection/Self-PPD/saved_tensors'
     # end
-
+    
     # memory_attention:
     #   _target_: sam2.modeling.memory_attention.MemoryAttention
     #   d_model: 256
@@ -185,7 +187,7 @@ trainer:
     num_classes_for_mask: ${scratch.max_num_objects} # add by bryce
     num_frames: ${scratch.num_frames}
     num_frames_with_invalid: ${scratch.num_frames_with_invalid}
-    threshold_for_boxes: 0.0
+    threshold_for_boxes: 0.1
     threshold_for_masks: 0.5
     num_maskmem: 5
     image_size: ${scratch.resolution}
@@ -237,8 +239,6 @@ trainer:
     rand_init_cond_frames_for_train: False # True  # random 1~2
     num_correction_pt_per_frame: ${trainer.model.num_maskmem}
     use_act_ckpt_iterative_pt_sampling: false
-    
-
     
     num_init_cond_frames_for_eval: ${scratch.num_frames}  # only mask on the first frame
     forward_backbone_per_frame_for_eval: False
@@ -353,22 +353,25 @@ trainer:
             end_value: ${divide:${scratch.vision_lr},10}
           param_names:
             - 'image_encoder.*'
+            # - 'sam_prompt_encoder.*'
+            # - 'sam_mask_decoder.*'
+
       weight_decay:
         - scheduler:
             _target_: fvcore.common.param_scheduler.ConstantParamScheduler
             value: 0.1
-        - scheduler:
-            _target_: fvcore.common.param_scheduler.ConstantParamScheduler
-            value: 0.0
-          param_names:
-            - 'image_encoder.trunk.*bias*' # # changed by bryce from '*bias*'
-          module_cls_names: ['torch.nn.LayerNorm'] # changed by bryce
+        # - scheduler:
+        #     _target_: fvcore.common.param_scheduler.ConstantParamScheduler
+        #     value: 0.0
+        #   param_names:
+        #     - 'image_encoder.trunk.*bias*' # # changed by bryce from '*bias*'
+        #   module_cls_names: ['torch.nn.LayerNorm'] # changed by bryce
 
   loss:
     all:
       _target_: training.loss_fns.MultiStepMultiMasksAndIous
       weight_dict:
-        loss_mask: 2
+        loss_mask: 20 # for semantic classification
         loss_dice: 1
         loss_iou: 1
         loss_class: 1 # for obj_score, indicating whether there is an object in one channel 
@@ -376,7 +379,7 @@ trainer:
         # for boxes
         loss_boxes_bbox: 5 # 5
         loss_boxes_giou: 2 # 2
-        loss_boxes_ce: 10 # 5
+        loss_boxes_ce: 5 # 5
         loss_boxes_xy: 1
         loss_boxes_hw: 1
 
@@ -393,7 +396,7 @@ trainer:
     val:
       _target_: training.loss_fns.MultiStepMultiMasksAndIous
       weight_dict:
-        loss_mask: 2
+        loss_mask: 20
         loss_dice: 1
         loss_iou: 1
         loss_class: 1 # for obj_score, indicating whether there is an object in one channel 
@@ -401,7 +404,7 @@ trainer:
         # for boxes
         loss_boxes_bbox: 5 # 5
         loss_boxes_giou: 2 # 2
-        loss_boxes_ce: 10 # 5
+        loss_boxes_ce: 5 # 5
         loss_boxes_xy: 1
         loss_boxes_hw: 1
 
@@ -424,7 +427,7 @@ trainer:
       log_dir:  ${launcher.experiment_log_dir}/tensorboard
       flush_secs: 120
       should_log: True
-    log_dir: ${launcher.experiment_log_dir}/logs
+    log_dir: ${launcher.experiment_log_dir}/logs_lr1e-5_300e_softmax_4classes_box_decoder_pretrain_multi_scales_updated_data
     log_freq: 10
 
   # initialize from a SAM 2 checkpoint
@@ -440,13 +443,13 @@ trainer:
 
       state_dict:
         _target_: training.utils.checkpoint_utils.load_checkpoint_and_apply_kernels
-        checkpoint_path: /home/jinghao/projects/dental_plague_detection/Self-PPD/checkpoints/sam2.1_hiera_tiny.pt # PATH to SAM 2.1 checkpoint
+        checkpoint_path: /home/jinghao/projects/dental_plague_detection/Self-PPD/checkpoints/sam2.1_hiera_tiny_with_box_decoder.pt # PATH to SAM 2.1 checkpoint
         ckpt_state_dict_keys: ['model']
 
 launcher:
   num_nodes: 1
   gpus_per_node: 1
-  experiment_log_dir: null # Path to log directory, defaults to ./sam2_logs/${config_name}
+  experiment_log_dir: logs_lr1e-5_300e_softmax_4classes_box_decoder_pretrain_multi_scales_updated_data # Path to log directory, defaults to ./sam2_logs/${config_name}
 
 # SLURM args if running on a cluster
 submitit:
@@ -458,4 +461,3 @@ submitit:
   timeout_hour: 24
   name: null
   port_range: [10000, 65000]
-

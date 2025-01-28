@@ -71,15 +71,17 @@ class RandomUniformSampler(VOSSampler):
             if retry >= MAX_RETRIES - 1:
                 raise Exception("No visible objects")
 
-        object_ids = sorted(random.sample(
-            visible_object_ids,
-            min(len(visible_object_ids), self.max_num_objects), # change by bryce 
-        ))
+        # object_ids = sorted(random.sample(
+        #     visible_object_ids,
+        #     min(len(visible_object_ids), self.max_num_objects), # change by bryce 
+        # ))
         # add by bryce; for handle four categories gt [bg, tooth, plague, caries]
         # if len(object_ids) < self.max_num_objects:
         #     object_ids.append(np.uint8(3)) # 3rd class for caries
         # fixed
-        object_ids = [np.uint8(1), np.uint8(2), np.uint8(3)]
+        # object_ids = [np.uint8(1), np.uint8(2), np.uint8(3)]
+        object_ids = [np.uint8(i) for i in range(self.max_num_objects)] # Fixing classes
+
         return SampledFramesAndObjects(frames=frames, object_ids=object_ids)
 
 

@@ -78,7 +78,8 @@ def convert_to_coco_format(input_folder, output_file):
         "categories": []
     }
 
-    category_mapping = {}
+    # category_mapping = {}
+    category_mapping = {5: 1, 6: 2, 7: 3, 8: 4, 9: 5, 19: 6, 1: 7, 2: 8, 3: 9, 4: 10, 15: 11, 16: 12, 17: 13, 18: 14, 10: 15, 11: 16, 12: 17, 13: 18, 14: 19, 0: 20, 28: 21, 25: 22, 26: 23, 24: 24, 27: 25, 21: 26, 23: 27, 20: 28, 29: 29, 22: 30}
     annotation_id = 1
     image_id = 1
 
@@ -93,7 +94,7 @@ def convert_to_coco_format(input_folder, output_file):
                     data = json.load(f)
 
                 # Get image information (assuming image file has same name as JSON but with .jpg/.png extension)
-                image_name = os.path.splitext(file)[0] + ".JPG"
+                image_name = file_path.replace('Json', 'JPEGImages').replace('.json', '.jpg')
                 image_width = 4032  # Replace with actual width if known
                 image_height = 3024  # Replace with actual height if known
 
@@ -114,6 +115,9 @@ def convert_to_coco_format(input_folder, output_file):
                     label = shape["label"]
                     if label in ['np', 'p', 'caries']:
                         continue
+                    if label.startswith('mouth'):
+                        continue
+                    print(file_path)
                     if label not in class_name_to_idx_map.keys():
                         print(label)
                     label = class_name_to_idx_map[label]
@@ -151,14 +155,14 @@ def convert_to_coco_format(input_folder, output_file):
 
                 # Increment image ID
                 image_id += 1
-    print(len(category_mapping))
+    print(category_mapping)
     # Save COCO format JSON to output file
-    with open(output_file, "w", encoding="utf-8") as f:
-        json.dump(coco_format, f, indent=4)
+    # with open(output_file, "w", encoding="utf-8") as f:
+    #     json.dump(coco_format, f, indent=4)
 
 # Input folder containing subfolders with JSON files
-input_folder = "/home/jinghao/projects/dental_plague_detection/dataset/11_12_for_pseudo_labels_bbox/"
+input_folder = "/home/jinghao/projects/dental_plague_detection/dataset/train/"
 # Output COCO JSON file
-output_file = "output_coco.json"
+output_file = "/home/jinghao/projects/dental_plague_detection/dataset/object_detection/test.json"
 
 convert_to_coco_format(input_folder, output_file)

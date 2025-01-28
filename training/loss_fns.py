@@ -50,6 +50,19 @@ def dice_loss(inputs, targets, num_objects, loss_on_multimask=False):
     return loss.sum() / num_objects
 
 
+def dice_loss_semantic_seg(pred, target, smooth=1e-6):
+    # pred: [batch_size, C, H, W] (after softmax)
+    # target: [batch_size, H, W]
+    num_classes = pred.size(1)
+    device = pred.device
+    pred = torch.softmax(pred, dim=1)  # Apply softmax to logits
+    target_one_hot = torch.eye(num_classes, device=device)[target].permute(0, 3, 1, 2).to(device)  # One-hot encoding
+    intersection = (pred * target_one_hot).sum(dim=(2, 3))
+    union = pred.sum(dim=(2, 3)) + target_one_hot.sum(dim=(2, 3))
+    dice = (2. * intersection + smooth) / (union + smooth)
+    return 1 - dice.mean()
+
+
 def sigmoid_focal_loss(
     inputs,
     targets,
@@ -101,6 +114,45 @@ def sigmoid_focal_loss(
     return loss.mean(1).sum() / num_objects
 
 
+def focal_loss_for_semantic_seg(logits, targets, alpha=1.0, gamma=2.0, reduction='mean'):
+    """
+    Focal Loss for multi-class classification.
+
+    Args:
+        logits: [batch_size, num_classes, H, W] - raw output from the model.
+        targets: [batch_size, H, W] - ground truth labels (integer class indices).
+        alpha (float): Weighting factor for classes.
+        gamma (float): Focusing parameter.
+        reduction (str): Specifies the reduction to apply: 'none', 'mean', 'sum'.
+
+    Returns:
+        torch.Tensor: Computed Focal Loss.
+    """
+    # Apply softmax to get probabilities
+    probs = F.softmax(logits, dim=1)  # [batch_size, num_classes, H, W]
+
+    # One-hot encode targets
+    num_classes = logits.size(1)  # Number of classes
+    targets_one_hot = torch.zeros_like(probs)  # Create a tensor of the same shape as probs
+    targets_one_hot.scatter_(1, targets.unsqueeze(1), 1)  # Convert targets to one-hot encoding
+
+    # Gather probabilities of the target class
+    probs_target = (probs * targets_one_hot).sum(dim=1)  # [batch_size, H, W]
+
+    # Compute Focal Loss
+    focal_weight = (1 - probs_target) ** gamma  # [batch_size, H, W]
+    log_probs = torch.log(probs_target + 1e-8)  # Avoid log(0)
+    loss = -alpha * focal_weight * log_probs  # [batch_size, H, W]
+
+    # Apply reduction
+    if reduction == 'mean':
+        return loss.mean()
+    elif reduction == 'sum':
+        return loss.sum()
+    else:  # 'none'
+        return loss
+
+
 def iou_loss(
     inputs, targets, pred_ious, num_objects, loss_on_multimask=False, use_l1_loss=False
 ):
@@ -139,6 +191,36 @@ def iou_loss(
         return loss / num_objects
     return loss.sum() / num_objects
 
+
+def iou_loss_for_semantic_seg(logits, targets, smooth=1e-6):
+    """
+    IoU Loss for semantic segmentation.
+
+    Args:
+        logits: [batch_size, num_classes, H, W] - raw output from the model.
+        targets: [batch_size, H, W] - ground truth labels (integer class indices).
+        smooth (float): Smoothing factor to avoid division by zero.
+
+    Returns:
+        torch.Tensor: Computed IoU Loss.
+    """
+    # Apply softmax to get probabilities
+    probs = F.softmax(logits, dim=1)  # [batch_size, num_classes, H, W]
+
+    # One-hot encode targets
+    num_classes = logits.size(1)
+    targets_one_hot = F.one_hot(targets, num_classes=num_classes).permute(0, 3, 1, 2).float()  # [batch_size, num_classes, H, W]
+
+    # Compute Intersection and Union
+    intersection = (probs * targets_one_hot).sum(dim=(2, 3))  # [batch_size, num_classes]
+    union = (probs + targets_one_hot - probs * targets_one_hot).sum(dim=(2, 3))  # [batch_size, num_classes]
+
+    # Compute IoU
+    iou = (intersection + smooth) / (union + smooth)  # [batch_size, num_classes]
+
+    # Compute IoU Loss
+    loss = 1 - iou
+    return loss.mean()  # Average over batch and classes
 
 class MultiStepMultiMasksAndIous(nn.Module):
     def __init__(
@@ -226,11 +308,90 @@ class MultiStepMultiMasksAndIous(nn.Module):
         for src_masks, ious, object_score_logits in zip(
             src_masks_list, ious_list, object_score_logits_list
         ):
-            self._update_losses(
+            # self._update_losses(
+            #     losses, src_masks, target_masks, ious, num_objects, object_score_logits
+            # )
+            self._update_losses_for_semantic_segmentation(
                 losses, src_masks, target_masks, ious, num_objects, object_score_logits
             )
         losses[CORE_LOSS_KEY] = self.reduce_loss(losses)
         return losses
+
+    def _update_losses_for_semantic_segmentation(
+        self, losses, src_masks, target_masks, ious, num_objects, object_score_logits
+    ):
+        target_masks = target_masks.squeeze(1).to(torch.int64)
+        # target_masks = target_masks.expand_as(src_masks) # (3,1,256,256)
+        # get focal, dice and iou loss on all output masks in a prediction step
+        loss_multimask = focal_loss_for_semantic_seg(src_masks.transpose(0,1).contiguous(), target_masks, alpha=self.focal_alpha, gamma=self.focal_gamma, reduction='mean')
+        loss_multidice = dice_loss_semantic_seg(src_masks.transpose(0,1).contiguous(), target_masks)
+
+        if not self.pred_obj_scores:
+            loss_class = torch.tensor(
+                0.0, dtype=loss_multimask.dtype, device=loss_multimask.device
+            )
+            target_obj = torch.ones(
+                loss_multimask.shape[0],
+                1,
+                dtype=loss_multimask.dtype,
+                device=loss_multimask.device,
+            )
+        else:
+            # target_obj = torch.any((target_masks[:, 0] > 0).flatten(1), dim=-1)[
+            #     ..., None
+            # ].float() # size(3, 1) value [[1,1,1,]]
+            # add by bryce
+            num_classes = src_masks.shape[0]
+            target_obj = torch.any(target_masks.unsqueeze(0) == torch.arange(num_classes, device=target_masks.device).view(num_classes, 1, 1, 1), dim=(1, 2, 3)).float().view(4, 1)
+
+            loss_class = sigmoid_focal_loss(
+                object_score_logits, # changed by bryce
+                target_obj,
+                num_objects,
+                alpha=self.focal_alpha_obj_score,
+                gamma=self.focal_gamma_obj_score,
+                for_object_score_compute=True
+            )
+
+        loss_multiiou = iou_loss_for_semantic_seg(src_masks.transpose(0,1).contiguous(), target_masks)
+
+        # assert loss_multimask.dim() == 2
+        # assert loss_multidice.dim() == 2
+        # assert loss_multiiou.dim() == 2
+        # if loss_multimask.size(1) > 1:
+        #     # take the mask indices with the smallest focal + dice loss for back propagation
+        #     loss_combo = (
+        #         loss_multimask * self.weight_dict["loss_mask"]
+        #         + loss_multidice * self.weight_dict["loss_dice"]
+        #     )
+        #     best_loss_inds = torch.argmin(loss_combo, dim=-1)
+        #     batch_inds = torch.arange(loss_combo.size(0), device=loss_combo.device)
+        #     loss_mask = loss_multimask[batch_inds, best_loss_inds].unsqueeze(1)
+        #     loss_dice = loss_multidice[batch_inds, best_loss_inds].unsqueeze(1)
+        #     # calculate the iou prediction and slot losses only in the index
+        #     # with the minimum loss for each mask (to be consistent w/ SAM)
+        #     if self.supervise_all_iou:
+        #         loss_iou = loss_multiiou.mean(dim=-1).unsqueeze(1)
+        #     else:
+        #         loss_iou = loss_multiiou[batch_inds, best_loss_inds].unsqueeze(1)
+        # else:
+        #     loss_mask = loss_multimask
+        #     loss_dice = loss_multidice
+        #     loss_iou = loss_multiiou
+        loss_mask = loss_multimask
+        loss_dice = loss_multidice
+        loss_iou = loss_multiiou
+        # backprop focal, dice and iou loss only if obj present
+        # changed by brice
+        # loss_mask = loss_mask * target_obj
+        # loss_dice = loss_dice * target_obj
+        # loss_iou = loss_iou * target_obj
+
+        # sum over batch dimension (note that the losses are already divided by num_objects)
+        losses["loss_mask"] += loss_mask
+        losses["loss_dice"] += loss_dice
+        losses["loss_iou"] += loss_iou
+        losses["loss_class"] += loss_class
 
     def _update_losses(
         self, losses, src_masks, target_masks, ious, num_objects, object_score_logits

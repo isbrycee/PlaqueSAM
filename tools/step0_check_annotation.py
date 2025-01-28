@@ -41,6 +41,7 @@ class_name_to_idx_map = {'51':0, '52':1, '53':2, '54':3, '55':4,
                             
                             "55'":4,
                             '622':6,
+                            '110': 15, # 81
                             # '585':19,
                             # '875':14,
 
@@ -48,7 +49,7 @@ class_name_to_idx_map = {'51':0, '52':1, '53':2, '54':3, '55':4,
                             '72/3':28,
                             '82/83':28,
                             '81/82': 28,
-
+                
                             # '42':16,
                             # '32':11,
                             # '22': 0,
@@ -172,12 +173,14 @@ def organize_data(root_dir):
                     check_and_resave_jsons(json_folder, json_save_dir)
 
 # 输入多个根目录路径
-root_directories = ["/home/jinghao/projects/dental_plague_detection/dataset/12_5/",]
+root_directories = "/home/jinghao/projects/dental_plague_detection/dataset/27_1_2025_revision/"
 
+date = [ '12_5',  '9_26',]
 # root_directories = ["/home/hust/haojing/dental_plague_dataset/10_24", ]
 # root_directories = '/home/hust/haojing/dental_plague_dataset/raw_data'
 # resaved_json_dir = '/home/hust/haojing/dental_plague_dataset/raw_data/resaved_json'
 
-for root_dir in root_directories:
+for root_dir in date:
+    root_dir = os.path.join(root_directories, root_dir)
     # single_path = os.path.join(root_directories, root_dir)
     organize_data(root_dir)

@@ -6,10 +6,12 @@ class MAPCalculator:
     def __init__(self, class_agnostic=False):
         self.class_agnostic =class_agnostic
         # 初始化 mAP 计算器
-        self.metric = MeanAveragePrecision()
+        self.metric = MeanAveragePrecision(class_metrics=True)
         # 存储所有预测和标注信息
         self.all_predictions = []
         self.all_targets = []
+        self.target_labels = []
+        self.pred_labels = []
         
     def update(self, preds, targets):
         """
@@ -23,14 +25,12 @@ class MAPCalculator:
                 pred["labels"] = torch.zeros_like(pred["labels"])  # 将预测框的类别设置为 0
             for target in targets:
                 target["labels"] = torch.zeros_like(target["labels"])  # 将标注框的类别设置为 0
-        # print('label')
-        # for pred in preds:
-        #     print(pred["labels"])
-        #     print(pred["boxes"])
-        # print('target')
-        # for target in targets:
-        #     print(target["labels"])
-        #     print(target["boxes"])
+        
+        for pred in preds:
+            self.pred_labels += pred["labels"].cpu().numpy().tolist()  # 将预测框的类别设置为 0
+        for target in targets:
+            self.target_labels += target["labels"].cpu().numpy().tolist()  # 将预测框的类别设置为 0
+
         self.all_predictions.extend(preds)
         self.all_targets.extend(targets)
 
@@ -39,4 +39,6 @@ class MAPCalculator:
         计算整个数据集的 mAP。
         """
         self.metric.update(self.all_predictions, self.all_targets)
+        print(set(self.pred_labels))
+        print(set(self.target_labels))
         return self.metric.compute()
