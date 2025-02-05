@@ -162,7 +162,7 @@ class SAM2Train(SAM2Base):
         # assert backbone_out['vision_features'].shape[0] == backbone_out['backbone_fpn'][0].shape[0]
 
         # add by bryce; for box prediction 
-        pred_cls, pred_boxes = self._forward_box_decoder(backbone_out)
+        pred_cls, pred_boxes, output_for_two_stage = self._forward_box_decoder(backbone_out)
         backbone_out['box_decoder_pred_cls'] = pred_cls
         backbone_out['box_decoder_pred_boxes'] = pred_boxes
         # end
@@ -173,7 +173,7 @@ class SAM2Train(SAM2Base):
 
         previous_stages_out = self.forward_tracking(backbone_out, input)
 
-        return previous_stages_out, backbone_out, pred_image_classifiy_logits, pred_image_classify_processed, indices_to_reserve
+        return previous_stages_out, backbone_out, output_for_two_stage, pred_image_classifiy_logits, pred_image_classify_processed, indices_to_reserve
 
 
     def _prepare_backbone_features_per_frame(self, img_batch, img_ids):

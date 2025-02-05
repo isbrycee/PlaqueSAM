@@ -1,16 +1,16 @@
 # @package _global_
 
 scratch:
-  resolution: 1024
+  resolution: 1280
   train_batch_size: 1
   num_train_workers: 16
   num_frames: 6
   num_frames_with_invalid: 8
   max_num_objects: 4
-  base_lr: 3.0e-4 # 5.0e-6
-  vision_lr: 3.0e-04 # 3.0e-06
+  base_lr: 1.0e-4 # 5.0e-6
+  vision_lr: 5.0e-05 # 3.0e-06
   phases_per_epoch: 1
-  num_epochs: 100
+  num_epochs: 50
 dataset_train:
   # PATHS to Dataset
   img_folder: /home/jinghao/projects/dental_plague_detection/dataset/train/JPEGImages/
@@ -68,7 +68,7 @@ trainer:
   max_epochs: ${times:${scratch.num_epochs},${scratch.phases_per_epoch}}
   accelerator: cuda
   seed_value: 123
-  val_epoch_freq: 2
+  val_epoch_freq: 1
   val_boxes_class_agnostic: False
 
   model:
@@ -243,7 +243,7 @@ trainer:
     num_init_cond_frames_for_eval: ${scratch.num_frames}  # only mask on the first frame
     forward_backbone_per_frame_for_eval: False
     
-
+  
   data:
     train:
       _target_: training.dataset.sam2_datasets.TorchTrainMixedDataset
@@ -355,17 +355,16 @@ trainer:
             - 'image_encoder.*'
             # - 'sam_prompt_encoder.*'
             # - 'sam_mask_decoder.*'
-
       weight_decay:
         - scheduler:
             _target_: fvcore.common.param_scheduler.ConstantParamScheduler
             value: 0.1
-        # - scheduler:
-        #     _target_: fvcore.common.param_scheduler.ConstantParamScheduler
-        #     value: 0.0
-        #   param_names:
-        #     - 'image_encoder.trunk.*bias*' # # changed by bryce from '*bias*'
-        #   module_cls_names: ['torch.nn.LayerNorm'] # changed by bryce
+        - scheduler:
+            _target_: fvcore.common.param_scheduler.ConstantParamScheduler
+            value: 0.0
+          param_names:
+            - 'image_encoder.trunk.*bias*' # # changed by bryce from '*bias*'
+          module_cls_names: ['torch.nn.LayerNorm'] # changed by bryce
 
   loss:
     all:
@@ -379,16 +378,20 @@ trainer:
         # for boxes
         loss_boxes_bbox: 5 # 5
         loss_boxes_giou: 2 # 2
-        loss_boxes_ce: 5 # 5
+        loss_boxes_ce: 10 # 5
         loss_boxes_xy: 1
         loss_boxes_hw: 1
 
         # for image_classify
         loss_image_classify: 1
 
+      focal_alpha: 0.75 # for mask
+      focal_gamma: 3
+      focal_alpha_for_box: 0.75
+      focal_gamma_for_box: 3
       supervise_all_iou: true
       iou_use_l1_loss: true
-      pred_obj_scores: true # changed by bryce
+      pred_obj_scores: true 
       focal_gamma_obj_score: 0.0
       focal_alpha_obj_score: -1.0
 
@@ -427,7 +430,7 @@ trainer:
       log_dir:  ${launcher.experiment_log_dir}/tensorboard
       flush_secs: 120
       should_log: True
-    log_dir: ${launcher.experiment_log_dir}/logs_lr1e-5_300e_softmax_4classes_box_decoder_pretrain_multi_scales_updated_data
+    log_dir: ${launcher.experiment_log_dir}/logs
     log_freq: 10
 
   # initialize from a SAM 2 checkpoint
@@ -443,13 +446,13 @@ trainer:
 
       state_dict:
         _target_: training.utils.checkpoint_utils.load_checkpoint_and_apply_kernels
-        checkpoint_path: /home/jinghao/projects/dental_plague_detection/Self-PPD/checkpoints/sam2.1_hiera_tiny_with_box_decoder.pt # PATH to SAM 2.1 checkpoint
+        checkpoint_path: /home/jinghao/projects/dental_plague_detection/Self-PPD/logs_lr1e-4_bblr5e-5_4_scales_twostage_class_weights_wd_focal0.75_again_100e/checkpoints/checkpoint.pt # PATH to SAM 2.1 checkpoint
         ckpt_state_dict_keys: ['model']
 
 launcher:
   num_nodes: 1
   gpus_per_node: 1
-  experiment_log_dir: logs_lr1e-5_300e_softmax_4classes_box_decoder_pretrain_multi_scales_updated_data # Path to log directory, defaults to ./sam2_logs/${config_name}
+  experiment_log_dir: logs_lr1e-4_bblr5e-5_4_scales_twostage_class_weights_wd_1280_50e # Path to log directory, defaults to ./sam2_logs/${config_name}
 
 # SLURM args if running on a cluster
 submitit:

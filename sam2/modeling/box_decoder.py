@@ -110,6 +110,14 @@ class BoxDecoder(nn.Module):
         self.prior_loc_templates_npy_input_path = prior_loc_templates_npy_input_path
         self.is_use_prior_loc_templates = is_use_prior_loc_templates
 
+        # for teo-stage
+        use_two_stage = True
+        if use_two_stage:
+            self.enc_output = nn.Linear(self.hidden_dim, self.hidden_dim)
+            self.enc_output_norm = nn.LayerNorm(self.hidden_dim)      
+            self.enc_out_class_embed = copy.deepcopy(_class_embed)
+            self.enc_out_bbox_embed = copy.deepcopy(_bbox_embed)
+
         # for generate 4 scale fests similarly in DINO
         self.fpn_channel_proj_32 = nn.Sequential(
             nn.Conv2d(
@@ -243,6 +251,54 @@ class BoxDecoder(nn.Module):
         memories = torch.cat(memories, dim=0)
         return backbone_out, bs, memories, feat_sizes, level_start_index, spatial_shapes, valid_ratios
 
+    def gen_encoder_output_proposals(self, memory:Tensor, memory_padding_mask:Tensor, spatial_shapes:Tensor, learnedwh=None):
+        """
+        Input:
+            - memory: bs, \sum{hw}, d_model
+            - memory_padding_mask: bs, \sum{hw}
+            - spatial_shapes: nlevel, 2
+            - learnedwh: 2
+        Output:
+            - output_memory: bs, \sum{hw}, d_model
+            - output_proposals: bs, \sum{hw}, 4
+        """
+        N_, S_, C_ = memory.shape
+        base_scale = 4.0
+        proposals = []
+        _cur = 0
+        for lvl, (H_, W_) in enumerate(spatial_shapes):
+            mask_flatten_ = memory_padding_mask[:, _cur:(_cur + H_ * W_)].view(N_, H_, W_, 1)
+            valid_H = torch.sum(~mask_flatten_[:, :, 0, 0], 1)
+            valid_W = torch.sum(~mask_flatten_[:, 0, :, 0], 1)
+
+            grid_y, grid_x = torch.meshgrid(torch.linspace(0, H_ - 1, H_, dtype=torch.float32, device=memory.device),
+                                            torch.linspace(0, W_ - 1, W_, dtype=torch.float32, device=memory.device))
+            grid = torch.cat([grid_x.unsqueeze(-1), grid_y.unsqueeze(-1)], -1) # H_, W_, 2
+
+            scale = torch.cat([valid_W.unsqueeze(-1), valid_H.unsqueeze(-1)], 1).view(N_, 1, 1, 2)
+            grid = (grid.unsqueeze(0).expand(N_, -1, -1, -1) + 0.5) / scale
+
+            if learnedwh is not None:
+                wh = torch.ones_like(grid) * learnedwh.sigmoid() * (2.0 ** lvl)
+            else:
+                wh = torch.ones_like(grid) * 0.05 * (2.0 ** lvl)
+
+            proposal = torch.cat((grid, wh), -1).view(N_, -1, 4)
+            proposals.append(proposal)
+            _cur += (H_ * W_)
+
+        output_proposals = torch.cat(proposals, 1)
+        output_proposals_valid = ((output_proposals > 0.01) & (output_proposals < 0.99)).all(-1, keepdim=True)
+        output_proposals = torch.log(output_proposals / (1 - output_proposals)) # unsigmoid
+        output_proposals = output_proposals.masked_fill(memory_padding_mask.unsqueeze(-1), float('inf'))
+        output_proposals = output_proposals.masked_fill(~output_proposals_valid, float('inf'))
+
+        output_memory = memory
+        output_memory = output_memory.masked_fill(memory_padding_mask.unsqueeze(-1), float(0))
+        output_memory = output_memory.masked_fill(~output_proposals_valid, float(0))
+
+        return output_memory, output_proposals
+
     def forward(self, backbone_out: dict):
 
         (
@@ -259,14 +315,49 @@ class BoxDecoder(nn.Module):
         # for i in range (img_feature.shape[0]):
         #     img_fea_with_pos.append(img_feature[i]+img_pos[i])
         
-        tgt_ = self.tgt_embed.weight[:, None, :].repeat(1, bs, 1).transpose(0, 1).contiguous() # nq, bs, d_model
-        refpoint_embed_ = self.refpoint_embed.weight[:, None, :].repeat(1, bs, 1).transpose(0, 1).contiguous() # nq, bs, 4
-        # init_box_proposal = refpoint_embed_.sigmoid()
-        refpoint_embed, tgt = refpoint_embed_, tgt_
-        mask_flatten = None
-        # spatial_shapes = torch.tensor((h,w)).to(device).unsqueeze(0)
-        # valid_ratios = torch.ones(bs, 1, 2).to(device)
-        # level_start_index = torch.tensor(0,).to(device)
+        ################################# for two-stage from DINO #################################
+        use_two_stage = True
+        if use_two_stage:
+            input_hw = None
+            device = memories.device
+            mask_flatten = torch.zeros(memories.shape[:2]).bool().transpose(0,1).contiguous().to(device)
+            output_memory, output_proposals = self.gen_encoder_output_proposals(
+                                memories.transpose(0,1).contiguous(), 
+                                mask_flatten, 
+                                spatial_shapes, 
+                                input_hw
+                                )
+            output_memory = self.enc_output_norm(self.enc_output(output_memory))
+            enc_outputs_class_unselected = self.enc_out_class_embed(output_memory)
+            enc_outputs_coord_unselected = self.enc_out_bbox_embed(output_memory) + output_proposals # (bs, \sum{hw}, 4) unsigmoid
+            topk = self.num_queries
+            topk_proposals = torch.topk(enc_outputs_class_unselected.max(-1)[0], topk, dim=1)[1] # bs, nq
+            
+            # gather boxes
+            refpoint_embed_undetach = torch.gather(enc_outputs_coord_unselected, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4)) # unsigmoid
+            refpoint_embed_ = refpoint_embed_undetach.detach()
+            init_box_proposal = torch.gather(output_proposals, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4)).sigmoid() # sigmoid
+            
+            # gather tgt
+            tgt_undetach = torch.gather(output_memory, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, self.hidden_dim))
+            tgt_ = tgt_undetach.detach()
+            refpoint_embed,tgt=refpoint_embed_,tgt_
+
+            hs_enc = tgt_undetach.unsqueeze(0)
+            interm_class =  self.enc_out_class_embed(hs_enc[-1])
+            ref_enc = refpoint_embed_undetach.sigmoid().unsqueeze(0)
+
+            output_for_two_stage = (interm_class, ref_enc, init_box_proposal)
+        ################################# END two-stage from DINO #################################
+        else:
+            tgt_ = self.tgt_embed.weight[:, None, :].repeat(1, bs, 1).transpose(0, 1).contiguous() # nq, bs, d_model
+            refpoint_embed_ = self.refpoint_embed.weight[:, None, :].repeat(1, bs, 1).transpose(0, 1).contiguous() # nq, bs, 4
+            # init_box_proposal = refpoint_embed_.sigmoid()
+            refpoint_embed, tgt = refpoint_embed_, tgt_
+            mask_flatten = None
+            # spatial_shapes = torch.tensor((h,w)).to(device).unsqueeze(0)
+            # valid_ratios = torch.ones(bs, 1, 2).to(device)
+            # level_start_index = torch.tensor(0,).to(device)
 
         hs, references = self.decoder(
                 tgt=tgt.transpose(0, 1).contiguous(), # query 
@@ -292,7 +383,7 @@ class BoxDecoder(nn.Module):
                                      layer_cls_embed, layer_hs in zip(self.class_embed, hs)])
         
         # out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord_list[-1]}
-        return outputs_class_list, outputs_coord_list # torch.Size([6, 6, 100, 30])
+        return outputs_class_list, outputs_coord_list, output_for_two_stage # torch.Size([6, 6, 100, 30])
         # return output_box, output_cls
 
 

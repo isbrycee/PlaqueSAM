@@ -187,6 +187,7 @@ class Trainer:
         self.max_epochs = max_epochs
         self.mode = mode
         self.val_epoch_freq = val_epoch_freq
+        self.best_val_ins_seg_50 = -1
         self.val_boxes_class_agnostic = val_boxes_class_agnostic
         self.optim_conf = OptimConf(**optim) if optim is not None else None
         self.meters_conf = meters
@@ -195,9 +196,9 @@ class Trainer:
         cuda = CudaConf(**cuda or {})
         self.where = 0.0
         # add by bryce
-
+        
         losses = ['labels', 'boxes'] # ['labels', 'boxes', 'cardinality']
-        self.loss_for_box = SetCriterion(num_classes=self.model_conf.box_decoder.num_classes, matcher=HungarianMatcher(), weight_dict=self.loss_conf.all.weight_dict, focal_alpha=0.25, losses=losses, image_size=model['image_size'])
+        self.loss_for_box = SetCriterion(num_classes=self.model_conf.box_decoder.num_classes, matcher=HungarianMatcher(), weight_dict=self.loss_conf.all.weight_dict, focal_alpha=self.loss_conf.all.focal_alpha_for_box, gamma=self.loss_conf.all.focal_gamma_for_box, losses=losses, image_size=model['image_size'])
         self.loss_for_image_classify = ImageClassificationLoss(class_weights=self.loss_conf.all.weight_dict['loss_image_classify'], class_weights_for_each_class=None)
 
         self._infer_distributed_backend_if_none(distributed, accelerator)
@@ -490,7 +491,7 @@ class Trainer:
 
         pred_masks_for_eval = torch.cat((pred_background_for_eval, pred_masks_sig_for_eval), dim=1)
         pred_masks_for_eval = torch.argmax(pred_masks_for_eval, dim=1) # (6, 256, 256) [0,1,2,3]
-
+        
         # for gt
         gt_masks_for_eval = gt_for_masks.int()
 
@@ -551,14 +552,21 @@ class Trainer:
         # as a dict having both a Tensor and a list.
         return [{'pred_logits': a, 'pred_boxes': b}
                 for a, b in zip(outputs_class[:-1], outputs_coord[:-1])]
-        
+    
+    def _set_interm_loss_for_box_decoder(self, output_for_two_stage):
+        interm_class, ref_enc, init_box_proposal = output_for_two_stage
+        interm_coord = ref_enc[-1]
+
+        return  {'pred_logits': interm_class, 'pred_boxes': interm_coord}
+
+
     def _step(
         self,
         batch: BatchedVideoDatapoint,
         model: nn.Module,
         phase: str,
     ):
-        outputs, outputs_for_boxes, pred_image_classifiy_logits, pred_image_classify_processed, indices_to_reserve = model(batch, phase)
+        outputs, outputs_for_boxes, output_for_two_stage, pred_image_classifiy_logits, pred_image_classify_processed, indices_to_reserve = model(batch, phase)
         targets = batch.masks[indices_to_reserve] # (6, 3, 256, 256)
         targets_for_semantic_seg = batch.masks_for_semantic_seg[indices_to_reserve].to(torch.int64)
         # for visualize gt mask
@@ -608,7 +616,7 @@ class Trainer:
         targets_boxes_cxcywh = copy.deepcopy(targets_boxes)
         # end
 
-        # for final prediction supervision
+        # for loss of boxes final prediction supervision
         outputs_boxes = {'pred_logits': outputs_for_boxes['box_decoder_pred_cls'][-1], 
                         'pred_boxes': outputs_for_boxes['box_decoder_pred_boxes'][-1]}
         loss_boxes = self.loss_for_box(outputs_boxes, targets_boxes_cxcywh)
@@ -625,7 +633,15 @@ class Trainer:
             for k, v in loss_boxes_aux.items():
                 new_key = k.split('_')[0] + f'_boxes_dec_layer{i}_' + k.split('_')[1]
                 loss[new_key] = v
-        # end
+
+        # for two-stage
+
+        interm_outputs_boxes = self._set_interm_loss_for_box_decoder(output_for_two_stage)
+        loss_interm_boxes = self.loss_for_box(interm_outputs_boxes, targets_boxes_cxcywh)
+        for k, v in loss_boxes.items():
+            new_key = k.split('_')[0] + '_interm_boxes_' + k.split('_')[1]
+            loss[new_key] = v
+        # end loss of boxes 
 
         # add by bryce; loss for image_classify
         targets_image_classify = torch.tensor(batch.image_classify).to(device)
@@ -692,7 +708,7 @@ class Trainer:
 
             # add by bryce
             loss = self._add_boxes_loss_into_core_loss(
-                loss, loss_boxes, aux_loss_boxes_list, loss_log_str, self.steps[phase]
+                loss, loss_boxes, aux_loss_boxes_list, loss_interm_boxes, loss_log_str, self.steps[phase]
             )
             loss = self._add_image_classify_loss_into_core_loss(
                 loss, loss_image_classify, loss_log_str, self.steps[phase]
@@ -964,7 +980,11 @@ class Trainer:
         logging.info(data_row)
         logging.info(separator)
 
-
+        # save ckp; add by bryce
+        if box_MaskmAP_results['ap']['map_50'] > self.best_val_ins_seg_50:
+            self.best_val_ins_seg_50 = box_MaskmAP_results['ap']['map_50']
+            self.save_checkpoint(self.epoch + 1, ['best_ins_seg_map50'])
+            logging.info(f"Best checkpoint has been saved. The current best instance segmentatiom map_50 is : {self.best_val_ins_seg_50}")
         return out_dict
 
     def _get_trainer_state(self, phase):
@@ -1318,7 +1338,7 @@ class Trainer:
         return core_loss
 
     # add by bryce
-    def _add_boxes_loss_into_core_loss(self, loss, loss_boxes, aux_loss_boxes_list, loss_str, step):
+    def _add_boxes_loss_into_core_loss(self, loss, loss_boxes, aux_loss_boxes_list, loss_interm_boxes, loss_str, step):
         core_loss = loss
         
         for k, v in loss_boxes.items():
@@ -1331,6 +1351,11 @@ class Trainer:
                 new_key = k.split('_')[0] + '_boxes_' + k.split('_')[1]
                 if 'error' not in new_key:
                     core_loss += v * self.loss_for_box.weight_dict[new_key]
+
+        for k, v in loss_interm_boxes.items():
+            new_key = k.split('_')[0] + '_boxes_' + k.split('_')[1]
+            if 'error' not in new_key:
+                core_loss += v * self.loss_for_box.weight_dict[new_key]
 
         if step % self.logging_conf.log_scalar_frequency == 0:
             for k in loss_boxes:

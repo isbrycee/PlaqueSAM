@@ -37,8 +37,8 @@ def generate_indexed_png(json_path, output_path, palette):
     # width = data['imageWidth']
     # height = data['imageHeight']
     
-    width = int(mouth_shape['points'][1][0] - mouth_shape['points'][0][0])
-    height = int(mouth_shape['points'][1][1] - mouth_shape['points'][0][1])
+    width = int(int(mouth_shape['points'][1][0]) - int(mouth_shape['points'][0][0]))
+    height = int(int(mouth_shape['points'][1][1]) - int(mouth_shape['points'][0][1]))
     
     # 创建一个新图像，模式为'P'表示索引色图
     img = Image.new('P', (width, height), 0)  # 背景为0

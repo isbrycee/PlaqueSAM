@@ -926,9 +926,9 @@ class SAM2Base(torch.nn.Module):
         self,
         backbone_features,
     ):
-        output_box, output_cls = self.box_decoder(backbone_features)
+        output_box, output_cls, output_for_two_stage  = self.box_decoder(backbone_features)
         
-        return output_box, output_cls
+        return output_box, output_cls, output_for_two_stage
     
     # add by bryce
     def _forward_image_classify_decoder(

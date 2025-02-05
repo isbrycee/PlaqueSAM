@@ -114,7 +114,7 @@ def sigmoid_focal_loss(
     return loss.mean(1).sum() / num_objects
 
 
-def focal_loss_for_semantic_seg(logits, targets, alpha=1.0, gamma=2.0, reduction='mean'):
+def focal_loss_for_semantic_seg(logits, targets, alpha=1.0, gamma=2.0, class_weights=None, reduction='mean'):
     """
     Focal Loss for multi-class classification.
 
@@ -143,6 +143,13 @@ def focal_loss_for_semantic_seg(logits, targets, alpha=1.0, gamma=2.0, reduction
     focal_weight = (1 - probs_target) ** gamma  # [batch_size, H, W]
     log_probs = torch.log(probs_target + 1e-8)  # Avoid log(0)
     loss = -alpha * focal_weight * log_probs  # [batch_size, H, W]
+
+    # Apply class weights if provided
+    if class_weights is not None:
+        # Gather class weights for each pixel
+        class_weights = class_weights.to(logits.device)  # Ensure weights are on the same device
+        weights = class_weights[targets]  # [batch_size, H, W]
+        loss = loss * weights  # Weight the loss for each pixel
 
     # Apply reduction
     if reduction == 'mean':
@@ -228,6 +235,8 @@ class MultiStepMultiMasksAndIous(nn.Module):
         weight_dict,
         focal_alpha=0.25,
         focal_gamma=2,
+        focal_alpha_for_box=0.25,
+        focal_gamma_for_box=2,
         supervise_all_iou=False,
         iou_use_l1_loss=False,
         pred_obj_scores=False,
@@ -323,7 +332,8 @@ class MultiStepMultiMasksAndIous(nn.Module):
         target_masks = target_masks.squeeze(1).to(torch.int64)
         # target_masks = target_masks.expand_as(src_masks) # (3,1,256,256)
         # get focal, dice and iou loss on all output masks in a prediction step
-        loss_multimask = focal_loss_for_semantic_seg(src_masks.transpose(0,1).contiguous(), target_masks, alpha=self.focal_alpha, gamma=self.focal_gamma, reduction='mean')
+        class_weights = torch.tensor([1.0, 5.0, 10.0, 10.0])
+        loss_multimask = focal_loss_for_semantic_seg(src_masks.transpose(0,1).contiguous(), target_masks, alpha=self.focal_alpha, gamma=self.focal_gamma, class_weights=class_weights, reduction='mean')
         loss_multidice = dice_loss_semantic_seg(src_masks.transpose(0,1).contiguous(), target_masks)
 
         if not self.pred_obj_scores:
