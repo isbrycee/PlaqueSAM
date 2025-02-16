@@ -7,12 +7,12 @@ from pycocotools import mask as mask_utils
 from tqdm import tqdm
 
 # train or test root, containing the dirs:/JPEGImages, /Annotaions, /Json
-root_dir = "/train_root/"
+root_dir = "/home/jinghao/projects/dental_plague_detection/dataset/train/"
 
 images_dir = os.path.join(root_dir, "JPEGImages")
 annotations_dir = os.path.join(root_dir, "Json")
 
-output_name = "train_revised"
+output_name = "train_ins"
 
 coco_data = {
     "info": {
@@ -21,7 +21,7 @@ coco_data = {
         "version": "1.0",
         "year": 2025,
         "contributor": "",
-        "date_created": "2025-01-22"
+        "date_created": "2025-02-16"
     },
     "licenses": [],
     "images": [],
@@ -75,9 +75,6 @@ class_name_to_idx_map = {'51': 0, '52': 1, '53': 2, '54': 3, '55': 4,
                          "55'": 4,
                          '622': 6,
 
-                         # '585':19,
-                         # '875':14,
-
                          '72\\3': 28,
                          '72/3': 28,
                          '82/83': 28,
@@ -85,18 +82,10 @@ class_name_to_idx_map = {'51': 0, '52': 1, '53': 2, '54': 3, '55': 4,
 
                          '110': 15,
 
-                         # '42':16,
-                         # '32':11,
-                         # '22': 0,
-                         # '23': 0,
-                         # '24': 0,
-                         # '25': 0,
-
                          }
 
 polyg_tooth_match_issues = []
 poly_shape_not_valid = []
-
 
 def get_annotations(json_path, image_id, annotation_id):
     with open(json_path, 'r') as f:
@@ -254,10 +243,6 @@ save_csv(polyg_tooth_match_issues, os.path.join(root_dir, f"{output_name}_polyg_
          ["file", "polygon_label", "tooth_label", "intersection_percentage"])
 save_csv(poly_shape_not_valid, os.path.join(root_dir, f"{output_name}_poly_shape_notValid.csv"),
          ["file", "label", "area_before_fix", "area_after_fix", "status"])
-
-
-
-
 
 # load the CoCo file & and print the category names
 

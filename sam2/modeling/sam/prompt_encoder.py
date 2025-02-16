@@ -22,7 +22,6 @@ class PromptEncoder(nn.Module):
         input_image_size: Tuple[int, int],
         mask_in_chans: int,
         is_class_agnostic: bool,
-        num_classes_for_mask: int,
         activation: Type[nn.Module] = nn.GELU,
     ) -> None:
         """
@@ -69,10 +68,6 @@ class PromptEncoder(nn.Module):
 
         # add by bryce
         self.is_class_agnostic = is_class_agnostic
-        self.num_classes_for_mask = num_classes_for_mask
-        if not self.is_class_agnostic and self.num_classes_for_mask >  0:
-            self.class_embed = nn.Embedding(num_classes_for_mask, embed_dim)
-            self.box_pos_bias = nn.Embedding(num_classes_for_mask, embed_dim)
 
 
     def get_dense_pe(self) -> torch.Tensor:
@@ -109,10 +104,6 @@ class PromptEncoder(nn.Module):
         point_embedding[labels == 2] += self.point_embeddings[2].weight
         point_embedding[labels == 3] += self.point_embeddings[3].weight
 
-        # add by bryce
-        if not self.is_class_agnostic:
-            for id in range(self.num_classes_for_mask):
-                point_embedding[id] = self.class_embed.weight[id] + self.box_pos_bias.weight[id]
         return point_embedding
 
     def _embed_boxes(self, boxes: torch.Tensor) -> torch.Tensor:

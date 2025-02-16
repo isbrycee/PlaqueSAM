@@ -197,7 +197,7 @@ class InstanceSegmentationMetric:
                 #     instance_label = box_label * self.num_mask_classes + mask_label  # 计算实例类别 ID
                 #     pred_instance_mask[i, y1:y2, x1:x2] = (cropped_mask == mask_label).int() * instance_label
 
-            # 遍历目标的 box，为每个 box 生成实例 mask
+            # 遍历 gt 的 box，为每个 box 生成实例 mask
             for i, (box, box_label) in enumerate(zip(target_boxes_tensor, target_labels)):
                 if box_label == 29: # for filtering the 'Crown'
                     continue
@@ -235,8 +235,8 @@ class InstanceSegmentationMetric:
             # visualize_and_save_masks_for_instance(all_instance_preds[-1], save_path='all_masks_pred.png')
             # visualize_and_save_masks_for_instance(all_instance_targets[-1], save_path='all_masks_gt.png')
         
-        for item in all_instance_preds:
-            visualize_and_save_masks_for_instance(item, save_path=f'/home/jinghao/projects/dental_plague_detection/ins_gt_vis/all_masks_gt_{time.strftime("%Y-%m-%d-%H_%M_%S", time.localtime(time.time()))}.png')
+        # for item in all_instance_preds:
+        #     visualize_and_save_masks_for_instance(item, save_path=f'/home/jinghao/projects/dental_plague_detection/ins_gt_vis/all_masks_gt_{time.strftime("%Y-%m-%d-%H_%M_%S", time.localtime(time.time()))}.png')
         self.mean_ap_metric.update(all_instance_preds, all_instance_targets)
         # 释放不再需要的变量
         del pred_masks, target_masks, all_instance_preds, all_instance_targets

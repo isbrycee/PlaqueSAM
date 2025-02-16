@@ -133,7 +133,8 @@ class PalettisedPNGSegmentLoader:
         masks = np.array(masks)
 
         object_id = pd.unique(masks.flatten())
-        # object_id = object_id[object_id != 0]  # raw: remove background (0); but changed by bryce (for softmax)
+
+        # object_id = object_id[object_id != 0]  # raw: remove background (0); but changed by bryce (for softmax); the bug source ??? 
 
         # convert into N binary segmentation masks
         binary_segments = {}
@@ -245,6 +246,55 @@ class JsonBBoxLoader:
             frame_id, _ = os.path.splitext(filename)
             self.frame_id_to_png_filename[int(frame_id)] = filename
 
+        self.class_name_to_idx_map = {'51':0, '52':1, '53':2, '54':3, '55':4, 
+                            '61':5, '62':6, '63':7, '64':8, '65':9, 
+                            '71':10, '72':11, '73':12, '74':13, '75':14,
+                            '81':15, '82':16, '83':17, '84':18, '85':19,
+
+                            '11': 20, '16': 21,
+                            '21': 22, '26': 23,
+                            '31': 24, '36': 25,
+                            '41': 26, '46': 27,
+
+                            'doubleteeth': 28,
+                            'crown': 29,
+
+                            '51_stain':0,'52_stain':1, '53_stain':2, '54_stain':3, '55_stain':4, 
+                            '61_stain':5, '62_stain':6, '63_stain':7, '64_stain':8, '65_stain':9, '63_stan':7,
+                            '71_stain':10, '72_stain':11, '73_stain':12, '74_stain':13, '75_stain':14, 
+                            '81_stain':15, '82_stain':16, '83_stain':17, '84_stain':18, '85_stain':19, 
+                            '71_stian':10,
+
+                            '52_retainedteeth':1,
+                            '53_retainedteeth':2,
+                            '75_discoloration':14,
+                            '51_discoloration':0,
+                            '51_retainedteeth':0,
+                            '61_retainedteeth':5,
+                            '62_retainedteeth':6,
+                            '64_retainedteeth':8,
+                            '63_retainedteeth':7,
+                            '54_retainedteeth':3,
+                            '74_retainedteeth':13,
+                            '61_discoloration':5,
+
+                            '55_crown':29,
+                            '84_crown':29,
+                            '74_crown':29,
+                            
+                            '110': 81,
+                            "55'":4,
+                            '622':6,
+                            '585':19,
+                            '875':14,
+
+                            '72\\3':28,
+                            '72/3':28,
+                            '82/83':28,
+                            '81/82': 28,
+                            }
+
+
     def load(self, frame_id):
         """
         load the single palettised mask from the disk (path: f'{self.video_png_root}/{frame_id:05d}.png')
@@ -277,6 +327,8 @@ class JsonBBoxLoader:
                             className_for_image_classify = -1
                         continue
                     boxXYXY = item['points']
+                    
+                    className = self.class_name_to_idx_map[className]
                     className_to_boxXYXY[className] = boxXYXY
 
         # with open(mask_path, 'r') as f:

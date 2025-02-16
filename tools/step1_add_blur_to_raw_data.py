@@ -128,9 +128,9 @@ def organize_data(root_dir):
 
 
 # 输入多个根目录路径
-root_directories = ['/home/jinghao/projects/dental_plague_detection/dataset/27_1_2025_revision/12_5/',
+root_directories = ['/home/jinghao/projects/dental_plague_detection/dataset/15_2_2025_revision/10_8/',
                     '/home/jinghao/projects/dental_plague_detection/dataset/27_1_2025_revision/9_26/' ]
-# root_directories = ["/home/jinghao/projects/dental_plague_detection/dataset/11_7/",  ]
+# root_directories = ["/home/jinghao/projects/dental_plague_detection/dataset/15_2_2025_revision_1",  ]
 for root_dir in root_directories:
     # single_path = os.path.join(root_directories, root_dir)
     organize_data(root_dir)

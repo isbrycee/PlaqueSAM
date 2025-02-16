@@ -507,14 +507,17 @@ class Trainer:
     def _get_pred_masks_info_for_evaluate_semantic_Seg(self, outputs_for_masks, gt_for_masks, score_threshod=0.5):
         masks_pred_list = []
         for pred_mask_logits in outputs_for_masks:
-            pred_mask_softmax = F.softmax(pred_mask_logits['pred_masks_high_res'].squeeze(1), dim=0)
-            pred_mask = torch.argmax(pred_mask_softmax, dim=0)
+            pred_mask_softmax = torch.softmax(pred_mask_logits['multistep_pred_multimasks_high_res'][0], dim=1)
+            
+            # 沿着类别通道维度（dim=1）找到最大索引
+            pred_mask = torch.argmax(pred_mask_softmax, dim=1).int()  # 直接保持维度
+
             masks_pred_list.append(pred_mask)
             
         # for pred
         pred_masks_for_eval = torch.stack(masks_pred_list, dim=0).int()
 
-        return pred_masks_for_eval, gt_for_masks.squeeze(1) # (); (6, 1024, 1024)
+        return pred_masks_for_eval.squeeze(1), gt_for_masks.squeeze(1) # (); (6, 1024, 1024)
     
 
     def _get_pred_boxes_info_for_evaluate(self, outputs_for_boxes, gt_for_boxes, score_threshod=0.5):
@@ -862,7 +865,7 @@ class Trainer:
         # add by bryce 
         map_calculator = MAPCalculator(class_agnostic=self.val_boxes_class_agnostic)
         # +1 for background
-        mIoU_calculator = MulticlassJaccardIndex(num_classes=self.model_conf.num_classes_for_mask, average=None).to(self.device)
+        mIoU_calculator = MulticlassJaccardIndex(num_classes=self.model_conf.num_classes_for_mask+1, average=None, ignore_index=0).to(self.device)
         accuracy_calculator = Accuracy(task="multiclass", num_classes=self.model_conf.image_classify_decoder.num_classes).to(self.device)
         MaskmAP_calculator = InstanceSegmentationMetric(num_box_classes=30, num_mask_classes=self.model_conf.num_classes_for_mask, device=self.device)
 
@@ -871,7 +874,6 @@ class Trainer:
             data_time.update(time.time() - end)
 
             batch = batch.to(self.device, non_blocking=True)
-
             # compute output
             with torch.no_grad():
                 with torch.cuda.amp.autocast(
@@ -960,7 +962,7 @@ class Trainer:
         logging.info(f"Object Detection mAP Results: {box_mAP_results}")
         # add by bryce; for Metrics logging; 计算平均 IoU（mIoU）
         mask_mIoU_results_per_class = mIoU_calculator.compute()
-        mask_mIoU_results = mask_mIoU_results_per_class.mean()
+        mask_mIoU_results = mask_mIoU_results_per_class[1:].mean()
         logging.info(f"Mask IoU Results Per Class: {mask_mIoU_results_per_class}")
         logging.info(f"Mask Mean IoU (mIoU) Results: {mask_mIoU_results}")
         # print("Object Detection mAP Results:", box_map_results)

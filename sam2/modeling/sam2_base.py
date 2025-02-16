@@ -31,6 +31,7 @@ class SAM2Base(torch.nn.Module):
         num_classes_for_mask=-1, # add by bryce
         num_frames=-1, # add by bryce
         num_frames_with_invalid=-1, # add by bryce
+        num_multimask_outputs=3, # add by bryce
         num_maskmem=7,  # default 1 input frame + 6 previous frames
         image_size=512,
         backbone_stride=16,  # stride of the image backbone output
@@ -184,7 +185,7 @@ class SAM2Base(torch.nn.Module):
             self.no_obj_embed_spatial = torch.nn.Parameter(torch.zeros(1, self.mem_dim))
             trunc_normal_(self.no_obj_embed_spatial, std=0.02)
 
-        self._build_sam_heads(is_class_agnostic=is_class_agnostic, num_classes_for_mask=num_classes_for_mask)
+        self._build_sam_heads(is_class_agnostic=is_class_agnostic)
         self.max_cond_frames_in_attn = max_cond_frames_in_attn
 
         # add by bryce
@@ -213,7 +214,7 @@ class SAM2Base(torch.nn.Module):
             "See notebooks/video_predictor_example.ipynb for an inference example."
         )
 
-    def _build_sam_heads(self, is_class_agnostic=True, num_classes_for_mask=-1):
+    def _build_sam_heads(self, is_class_agnostic=True, num_multimask_outputs=3):
         """Build SAM-style prompt encoder and mask decoder."""
         self.sam_prompt_embed_dim = self.hidden_dim
         self.sam_image_embedding_size = self.image_size // self.backbone_stride
@@ -229,10 +230,9 @@ class SAM2Base(torch.nn.Module):
             input_image_size=(self.image_size, self.image_size),
             mask_in_chans=16,
             is_class_agnostic=is_class_agnostic, # add by bryce
-            num_classes_for_mask=num_classes_for_mask  # add by bryce
         )
         self.sam_mask_decoder = MaskDecoder(
-            num_multimask_outputs=3,
+            num_multimask_outputs=num_multimask_outputs,
             transformer=TwoWayTransformer(
                 depth=2,
                 embedding_dim=self.sam_prompt_embed_dim,
@@ -317,7 +317,7 @@ class SAM2Base(torch.nn.Module):
         assert backbone_features.size(1) == self.sam_prompt_embed_dim
         assert backbone_features.size(2) == self.sam_image_embedding_size
         assert backbone_features.size(3) == self.sam_image_embedding_size
-
+        
         # a) Handle point prompts
         if point_inputs is not None:
             sam_point_coords = point_inputs["point_coords"]
@@ -414,13 +414,13 @@ class SAM2Base(torch.nn.Module):
             obj_ptr = obj_ptr + (1 - lambda_is_obj_appearing) * self.no_obj_ptr
 
         return (
-            low_res_multimasks, # (3, 1, 64, 64)
-            high_res_multimasks, # (3, 1, 256, 256)
-            ious, # (3, 1)
-            low_res_masks, # (3, 1, 64, 64)
-            high_res_masks, # (3, 1, 256, 256)
-            obj_ptr, # (3, 256)
-            object_score_logits, # (3, 1)
+            low_res_multimasks, # (1, 4, 64, 64)
+            high_res_multimasks, # (1, 4, 256, 256)
+            ious, # (1, 4)
+            low_res_masks, # (1, 1, 64, 64)
+            high_res_masks, # (1, 1, 256, 256)
+            obj_ptr, # (1, 256)
+            object_score_logits, # (1, 1)
         )
 
     def _use_mask_as_output(self, backbone_features, high_res_features, mask_inputs):

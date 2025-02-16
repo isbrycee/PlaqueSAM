@@ -11,7 +11,7 @@ def print_unique_pixel_values(folder_path):
                 # 转换为numpy数组
                 img_array = np.array(img)
                 # 找到数组中的唯一值并添加到集合中
-                print(img_array.shape)
+                # print(img_array.shape)
                 unique_values.update(np.unique(img_array))
     
     # 打印出所有图像中存在的不同的像素值
@@ -20,5 +20,5 @@ def print_unique_pixel_values(folder_path):
         print(value)
 
 # 测试函数
-folder_path = "/home/hust/haojing/sam2/datasets/valid_demo/Annotations/6acd353f"
+folder_path = "/home/jinghao/projects/dental_plague_detection/dataset/plague_semantic_segmentation/annotations/validation"
 print_unique_pixel_values(folder_path)

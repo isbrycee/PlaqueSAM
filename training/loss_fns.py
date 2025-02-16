@@ -60,7 +60,8 @@ def dice_loss_semantic_seg(pred, target, smooth=1e-6):
     intersection = (pred * target_one_hot).sum(dim=(2, 3))
     union = pred.sum(dim=(2, 3)) + target_one_hot.sum(dim=(2, 3))
     dice = (2. * intersection + smooth) / (union + smooth)
-    return 1 - dice.mean()
+    dice_non_background = dice[:, 1:]  # remove background
+    return 1 - dice_non_background.mean()
 
 
 def sigmoid_focal_loss(
@@ -91,6 +92,11 @@ def sigmoid_focal_loss(
     """
     # prob = inputs.sigmoid() # size(3,1,256,256) raw ; changed by bryce
     
+    # remove background
+    # inputs = inputs[1:, :]
+    # targets = targets[1:, :]
+    targets = targets[0:1, :] # changed by bryce ; !!! note !!!
+    
     if not for_object_score_compute:
         input_softmax = F.softmax(inputs, dim=0)
         prob = input_softmax # size(3,1,256,256)
@@ -111,53 +117,165 @@ def sigmoid_focal_loss(
         # loss is [N, M, H, W] where M corresponds to multiple predicted masks
         assert loss.dim() == 4
         return loss.flatten(2).mean(-1) / num_objects  # average over spatial dims
+    
     return loss.mean(1).sum() / num_objects
 
 
+
 def focal_loss_for_semantic_seg(logits, targets, alpha=1.0, gamma=2.0, class_weights=None, reduction='mean'):
-    """
-    Focal Loss for multi-class classification.
 
-    Args:
-        logits: [batch_size, num_classes, H, W] - raw output from the model.
-        targets: [batch_size, H, W] - ground truth labels (integer class indices).
-        alpha (float): Weighting factor for classes.
-        gamma (float): Focusing parameter.
-        reduction (str): Specifies the reduction to apply: 'none', 'mean', 'sum'.
+    # 检查 gt 中的值是否在合法范围内
+    if torch.any(targets >= logits.shape[1]):
+        raise ValueError("Ground truth contains invalid class indices.")
+    device = logits.device
+    num_classes = logits.shape[1]
+    class_counts = torch.bincount(targets.view(-1), minlength=num_classes)
 
-    Returns:
-        torch.Tensor: Computed Focal Loss.
-    """
-    # Apply softmax to get probabilities
-    probs = F.softmax(logits, dim=1)  # [batch_size, num_classes, H, W]
+    # 只考虑前景类别（1, 2, 3）
+    foreground_counts = class_counts[1:4]
+    # 计算权重，忽略数量为 0 的类别
+    class_weights = torch.zeros(3)  # 初始化前景类别的权重
+    for i, count in enumerate(foreground_counts):
+        if count > 0:  # 忽略数量为 0 的类别
+            class_weights[i] = 1.0 / count
 
-    # One-hot encode targets
-    num_classes = logits.size(1)  # Number of classes
-    targets_one_hot = torch.zeros_like(probs)  # Create a tensor of the same shape as probs
-    targets_one_hot.scatter_(1, targets.unsqueeze(1), 1)  # Convert targets to one-hot encoding
+    # 归一化权重，使得权重之和为1
+    if class_weights.sum() > 0:  # 确保有权重被计算
+        class_weights = class_weights / class_weights.sum()
 
-    # Gather probabilities of the target class
-    probs_target = (probs * targets_one_hot).sum(dim=1)  # [batch_size, H, W]
+    # 构建长度为 4 的权重张量，背景类别的权重设为 0
+    final_class_weights = torch.zeros(4)  # 背景类别权重为 0
+    final_class_weights[1:4] = class_weights  # 填充前景类别的权重
 
-    # Compute Focal Loss
-    focal_weight = (1 - probs_target) ** gamma  # [batch_size, H, W]
-    log_probs = torch.log(probs_target + 1e-8)  # Avoid log(0)
-    loss = -alpha * focal_weight * log_probs  # [batch_size, H, W]
+    criterion = nn.CrossEntropyLoss(ignore_index=0, weight=final_class_weights.to(device))
+    
+    # 计算损失
+    loss = criterion(logits, targets.long())  # gt.squeeze(1) 将 (1, 1, 512, 512) 变为 (1, 512, 512)
 
-    # Apply class weights if provided
-    if class_weights is not None:
-        # Gather class weights for each pixel
-        class_weights = class_weights.to(logits.device)  # Ensure weights are on the same device
-        weights = class_weights[targets]  # [batch_size, H, W]
-        loss = loss * weights  # Weight the loss for each pixel
 
-    # Apply reduction
-    if reduction == 'mean':
-        return loss.mean()
-    elif reduction == 'sum':
-        return loss.sum()
-    else:  # 'none'
-        return loss
+    return loss
+
+
+# def focal_loss_for_semantic_seg(logits, targets, alpha=1.0, gamma=2.0, class_weights=None, reduction='mean'):
+#     """
+#     Focal Loss for multi-class classification.
+
+#     Args:
+#         logits: [batch_size, num_classes, H, W] - raw output from the model.
+#         targets: [batch_size, H, W] - ground truth labels (integer class indices).
+#         alpha (float): Weighting factor for classes.
+#         gamma (float): Focusing parameter.
+#         reduction (str): Specifies the reduction to apply: 'none', 'mean', 'sum'.
+
+#     Returns:
+#         torch.Tensor: Computed Focal Loss.
+#     """
+#     # changed by bryce; 20250212
+#     # probs = logits.sigmoid()
+#     # Apply softmax to get probabilities
+#     probs = F.softmax(logits, dim=1)  # [batch_size, num_classes, H, W]
+    
+#     # One-hot encode targets
+#     num_classes = logits.size(1)  # Number of classes
+#     targets_one_hot = torch.zeros_like(probs)  # Create a tensor of the same shape as probs
+#     targets_one_hot.scatter_(1, targets.unsqueeze(1), 1)  # Convert targets to one-hot encoding
+
+#     # remove background
+#     # probs = probs[:, 1:, :, :]
+#     # targets_one_hot = targets_one_hot[:, 1:, :, :]
+
+#     # Gather probabilities of the target class
+#     probs_target = (probs * targets_one_hot).sum(dim=1)  # [batch_size, H, W]
+
+#     # Compute Focal Loss
+#     focal_weight = (1 - probs_target) ** gamma  # [batch_size, H, W]
+#     log_probs = torch.log(probs_target + 1e-8)  # Avoid log(0)
+#     loss = -alpha * focal_weight * log_probs  # [batch_size, H, W]
+
+#     # Apply class weights if provided
+#     if class_weights is not None:
+#         # Gather class weights for each pixel
+#         class_weights = class_weights.to(logits.device)  # Ensure weights are on the same device
+#         weights = class_weights[targets]  # [batch_size, H, W]
+#         loss = loss * weights  # Weight the loss for each pixel
+
+#     # Apply reduction
+#     if reduction == 'mean':
+#         return loss.mean()
+#     elif reduction == 'sum':
+#         return loss.sum()
+#     else:  # 'none'
+#         return loss
+
+# def focal_loss_for_semantic_seg(logits, gt, ignore_index=0):
+#     """
+#     计算语义分割的监督损失，并忽略背景类的像素。
+#     修复了可能导致 NaN 的问题。
+    
+#     Args:
+#         logits (torch.Tensor): 模型输出的 logits，shape 为 (N, C, H, W)，其中 C 是类别数。
+#         gt (torch.Tensor): Ground Truth 标签，shape 为 (N, H, W)。
+#         ignore_index (int): 要忽略的类别索引，默认为 0（背景类）。
+    
+#     Returns:
+#         loss (torch.Tensor): 计算的监督损失。
+#     """
+#     # 确保 logits 的 shape 是 (N, C, H, W)，gt 的 shape 是 (N, H, W)
+#     assert logits.shape[0] == gt.shape[0], "Batch size must match between logits and gt"
+#     assert logits.shape[2:] == gt.shape[1:], "Spatial dimensions must match between logits and gt"
+#     assert logits.shape[1] > ignore_index, "Logits must have at least ignore_index+1 channels"
+
+#     # 检查 gt 中的值是否在合法范围内
+#     if torch.any(gt >= logits.shape[1]):
+#         raise ValueError("Ground truth contains invalid class indices.")
+
+#     num_classes = logits.shape[1]
+#     class_counts = torch.bincount(gt.view(-1), minlength=num_classes)
+#     class_weights = 1.0 / (class_counts.float() + 1e-6)  # 避免除以 0
+#     class_weights /= class_weights.sum()  # 归一化
+
+#     # # 避免 logits 值过大或过小导致数值不稳定
+#     # logits = torch.clamp(logits, min=-100, max=100)
+
+#     # # 使用 CrossEntropyLoss，设置 ignore_index 来忽略背景类
+#     loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights, ignore_index=ignore_index)
+    
+#     # # 计算损失
+#     loss = loss_fn(logits, gt)
+    
+#     # 创建一个掩码，忽略背景类（第 0 类）
+#     # mask = (gt != 0).float()
+    
+#     # # 计算交叉熵损失
+#     # criterion = nn.CrossEntropyLoss(reduction='none')  # 使用 reduction='none' 来获取每个像素的损失
+#     # loss = criterion(logits, gt)
+
+#     # # 应用掩码，忽略背景类的损失
+#     # loss = (loss * mask).sum() / mask.sum()  # 只计算非背景类的平均损失
+
+#     # # 检查损失是否为 NaN
+#     # if torch.isnan(loss):
+#     #     return torch.tensor(0.0, device=logits.device)
+#     #     raise ValueError("Loss became NaN. Check your logits and ground truth data.")
+#     print("mask loss: ", loss)
+#     return loss
+
+# def focal_loss_for_semantic_seg(inputs, target, num_classes=0, alpha=0.5, gamma=2):
+#     n, c, h, w = inputs.size()
+#     nt, ht, wt = target.size()
+#     # if h != ht and w != wt:
+#     #     inputs = F.interpolate(inputs, size=(ht, wt), mode="bilinear", align_corners=True)
+
+#     temp_inputs = inputs.transpose(1, 2).transpose(2, 3).contiguous().view(-1, c)
+#     temp_target = target.view(-1)
+
+#     logpt  = -nn.CrossEntropyLoss(ignore_index=num_classes, reduction='none')(temp_inputs, temp_target) # weight=cls_weights,
+#     pt = torch.exp(logpt)
+#     if alpha is not None:
+#         logpt *= alpha
+#     loss = -((1 - pt) ** gamma) * logpt
+#     loss = loss.mean()
+#     return loss
 
 
 def iou_loss(
@@ -213,7 +331,7 @@ def iou_loss_for_semantic_seg(logits, targets, smooth=1e-6):
     """
     # Apply softmax to get probabilities
     probs = F.softmax(logits, dim=1)  # [batch_size, num_classes, H, W]
-
+    
     # One-hot encode targets
     num_classes = logits.size(1)
     targets_one_hot = F.one_hot(targets, num_classes=num_classes).permute(0, 3, 1, 2).float()  # [batch_size, num_classes, H, W]
@@ -227,7 +345,8 @@ def iou_loss_for_semantic_seg(logits, targets, smooth=1e-6):
 
     # Compute IoU Loss
     loss = 1 - iou
-    return loss.mean()  # Average over batch and classes
+    loss_non_background = loss[:, 1:]  # remove background
+    return loss_non_background.mean()  # Average over batch and classes
 
 class MultiStepMultiMasksAndIous(nn.Module):
     def __init__(
@@ -330,11 +449,14 @@ class MultiStepMultiMasksAndIous(nn.Module):
         self, losses, src_masks, target_masks, ious, num_objects, object_score_logits
     ):
         target_masks = target_masks.squeeze(1).to(torch.int64)
+        src_masks = src_masks.transpose(1,0).contiguous()
         # target_masks = target_masks.expand_as(src_masks) # (3,1,256,256)
         # get focal, dice and iou loss on all output masks in a prediction step
         class_weights = torch.tensor([1.0, 5.0, 10.0, 10.0])
         loss_multimask = focal_loss_for_semantic_seg(src_masks.transpose(0,1).contiguous(), target_masks, alpha=self.focal_alpha, gamma=self.focal_gamma, class_weights=class_weights, reduction='mean')
+        # loss_multimask = focal_loss_for_semantic_seg(src_masks.transpose(0,1).contiguous(), target_masks)
         loss_multidice = dice_loss_semantic_seg(src_masks.transpose(0,1).contiguous(), target_masks)
+        loss_multiiou = iou_loss_for_semantic_seg(src_masks.transpose(0,1).contiguous(), target_masks)
 
         if not self.pred_obj_scores:
             loss_class = torch.tensor(
@@ -352,8 +474,7 @@ class MultiStepMultiMasksAndIous(nn.Module):
             # ].float() # size(3, 1) value [[1,1,1,]]
             # add by bryce
             num_classes = src_masks.shape[0]
-            target_obj = torch.any(target_masks.unsqueeze(0) == torch.arange(num_classes, device=target_masks.device).view(num_classes, 1, 1, 1), dim=(1, 2, 3)).float().view(4, 1)
-
+            target_obj = torch.any(target_masks.unsqueeze(0) == torch.arange(num_classes, device=target_masks.device).view(num_classes, 1, 1, 1), dim=(1, 2, 3)).float().view(num_classes, 1)
             loss_class = sigmoid_focal_loss(
                 object_score_logits, # changed by bryce
                 target_obj,
@@ -362,8 +483,6 @@ class MultiStepMultiMasksAndIous(nn.Module):
                 gamma=self.focal_gamma_obj_score,
                 for_object_score_compute=True
             )
-
-        loss_multiiou = iou_loss_for_semantic_seg(src_masks.transpose(0,1).contiguous(), target_masks)
 
         # assert loss_multimask.dim() == 2
         # assert loss_multidice.dim() == 2
@@ -388,20 +507,24 @@ class MultiStepMultiMasksAndIous(nn.Module):
         #     loss_mask = loss_multimask
         #     loss_dice = loss_multidice
         #     loss_iou = loss_multiiou
+        
         loss_mask = loss_multimask
-        loss_dice = loss_multidice
-        loss_iou = loss_multiiou
+        loss_dice = loss_multidice # torch.tensor(0.0, device=target_masks.device) # loss_multidice
+        loss_iou = loss_multiiou # torch.tensor(0.0, device=target_masks.device) # loss_multiiou
+        
         # backprop focal, dice and iou loss only if obj present
-        # changed by brice
+        # changed by bryce
+        # target_obj[0, 0] = 0 # remove background
         # loss_mask = loss_mask * target_obj
-        # loss_dice = loss_dice * target_obj
-        # loss_iou = loss_iou * target_obj
+        # loss_dice = (loss_dice * target_obj).sum()
+        # loss_iou = (loss_iou * target_obj).sum()
+        # loss_class = (loss_class * target_obj).sum()
 
         # sum over batch dimension (note that the losses are already divided by num_objects)
         losses["loss_mask"] += loss_mask
         losses["loss_dice"] += loss_dice
         losses["loss_iou"] += loss_iou
-        losses["loss_class"] += loss_class
+        losses["loss_class"] += loss_class # torch.tensor(0.0, device=target_masks.device) # loss_class
 
     def _update_losses(
         self, losses, src_masks, target_masks, ious, num_objects, object_score_logits

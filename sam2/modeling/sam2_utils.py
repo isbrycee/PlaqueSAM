@@ -177,6 +177,7 @@ def sample_box_points(
     """
     device = masks.device
     B, _, H, W = masks.shape
+    B = 1 # add by bryce !!! note !!!
     if not is_provide_box:
         box_coords = mask_to_box(masks) # size [3, 1, 4]
         box_labels = torch.tensor(

@@ -52,7 +52,7 @@ class MaskDecoder(nn.Module):
         self.transformer = transformer
 
         self.num_multimask_outputs = num_multimask_outputs
-
+        
         self.iou_token = nn.Embedding(1, transformer_dim)
         self.num_mask_tokens = num_multimask_outputs + 1
         self.mask_tokens = nn.Embedding(self.num_mask_tokens, transformer_dim)
@@ -134,18 +134,18 @@ class MaskDecoder(nn.Module):
           torch.Tensor: batched SAM token for mask output
         """
         masks, iou_pred, mask_tokens_out, object_score_logits = self.predict_masks(
-            image_embeddings=image_embeddings,
-            image_pe=image_pe,
-            sparse_prompt_embeddings=sparse_prompt_embeddings,
-            dense_prompt_embeddings=dense_prompt_embeddings,
-            repeat_image=repeat_image,
-            high_res_features=high_res_features,
+            image_embeddings=image_embeddings, # (num_objs, 256, 32, 32)
+            image_pe=image_pe, # (1, 256, 32, 32)
+            sparse_prompt_embeddings=sparse_prompt_embeddings, # (4, 12 ,256)
+            dense_prompt_embeddings=dense_prompt_embeddings, # (4, 256, 32, 32)
+            repeat_image=repeat_image,# False 
+            high_res_features=high_res_features, # False
         )
 
         # Select the correct mask or masks for output
         if multimask_output:
-            masks = masks[:, 1:, :, :]
-            iou_pred = iou_pred[:, 1:]
+            masks = masks[:, :, :, :] # masks = masks[:, 1:, :, :]; changed by bryce
+            iou_pred = iou_pred[:, :] # iou_pred = iou_pred[:, 1:]; changed by bryce
         elif self.dynamic_multimask_via_stability and not self.training:
             masks, iou_pred = self._dynamic_multimask_via_stability(masks, iou_pred)
         else: # here
@@ -153,7 +153,7 @@ class MaskDecoder(nn.Module):
             iou_pred = iou_pred[:, 0:1]
 
         if multimask_output and self.use_multimask_token_for_obj_ptr:
-            sam_tokens_out = mask_tokens_out[:, 1:]  # [b, 3, c] shape
+            sam_tokens_out = mask_tokens_out[:, :]  # sam_tokens_out = mask_tokens_out[:, 1:] ; changed by bryce [b, 3, c] shape
         else:
             # Take the mask output token. Here we *always* use the token for single mask output.
             # At test time, even if we track after 1-click (and using multimask_output=True),
@@ -194,8 +194,8 @@ class MaskDecoder(nn.Module):
         output_tokens = output_tokens.unsqueeze(0).expand(
             sparse_prompt_embeddings.size(0), -1, -1
         )
-        tokens = torch.cat((output_tokens, sparse_prompt_embeddings), dim=1) # [1, 18(6+12), 256]
-
+        tokens = torch.cat((output_tokens, sparse_prompt_embeddings), dim=1) # [3, 18(6+12), 256]
+        
         # Expand per-image data in batch direction to be per-mask
         if repeat_image:
             src = torch.repeat_interleave(image_embeddings, tokens.shape[0], dim=0)
@@ -210,7 +210,7 @@ class MaskDecoder(nn.Module):
         b, c, h, w = src.shape
 
         # Run the transformer
-        hs, src = self.transformer(src, pos_src, tokens) # (3, 18, 256); (3, 4096, 256)
+        hs, src = self.transformer(src, pos_src, tokens) # (4, 18, 256); (4, 4096, 256)
         iou_token_out = hs[:, s, :] # s=1
         mask_tokens_out = hs[:, s + 1 : (s + 1 + self.num_mask_tokens), :] # (3, 4, 256)
 
@@ -227,11 +227,11 @@ class MaskDecoder(nn.Module):
         hyper_in_list: List[torch.Tensor] = []
         for i in range(self.num_mask_tokens):
             hyper_in_list.append(
-                self.output_hypernetworks_mlps[i](mask_tokens_out[:, i, :])
+                self.output_hypernetworks_mlps[i](mask_tokens_out[:, i, :]) # (4, 1, 256); 4 objs, 1 masks
             )
-        hyper_in = torch.stack(hyper_in_list, dim=1) # (3, 4, 32)
+        hyper_in = torch.stack(hyper_in_list, dim=1) # (4, 4, 32) ; 4 objs, 4 masks
         b, c, h, w = upscaled_embedding.shape
-        masks = (hyper_in @ upscaled_embedding.view(b, c, h * w)).view(b, -1, h, w) # (3, 4, 256, 256)
+        masks = (hyper_in @ upscaled_embedding.view(b, c, h * w)).view(b, -1, h, w) # (3, 4, 256, 256); three classes; four masks for each class
 
         # Generate mask quality predictions
         iou_pred = self.iou_prediction_head(iou_token_out) # (3, 4) for quality 

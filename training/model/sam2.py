@@ -36,9 +36,9 @@ class SAM2Train(SAM2Base):
         box_decoder=None, # add by bryce
         image_classify_decoder=None, # add by bryce
         is_class_agnostic=True, # add by bryce
-        num_classes_for_mask=-1, # add by bryce
         num_frames=-1, # add by bryce
         num_frames_with_invalid=-1, # add by bryce
+        num_multimask_outputs=3, # add by bryce
         threshold_for_boxes=0.5, # add by bryce
         threshold_for_masks=0.5, # add by bryce
         prob_to_use_pt_input_for_train=0.0,
@@ -120,9 +120,10 @@ class SAM2Train(SAM2Base):
         # add by bryce
         self.num_frames = num_frames
         self.num_frames_with_invalid = num_frames_with_invalid
+        self.num_multimask_outputs = num_multimask_outputs
         self.threshold_for_boxes = threshold_for_boxes
         self.threshold_for_masks = threshold_for_masks
-        self._build_sam_heads(is_class_agnostic=is_class_agnostic, num_classes_for_mask=num_classes_for_mask)
+        self._build_sam_heads(is_class_agnostic=is_class_agnostic, num_multimask_outputs=num_multimask_outputs)
         self.Boxes_Decoder_PostProcess = PostProcess()
         # end
 
@@ -168,7 +169,7 @@ class SAM2Train(SAM2Base):
         # end
 
         # backbone_out = self.prepare_prompt_inputs(backbone_out, input)
-
+        
         backbone_out = self.prepare_prompt_inputs_box(backbone_out, input, indices_to_reserve, phase=phase, threshold=self.threshold_for_boxes)
 
         previous_stages_out = self.forward_tracking(backbone_out, input)
@@ -509,7 +510,7 @@ class SAM2Train(SAM2Base):
         }
         for stage_id in processing_order:
             # Get the image features for the current frames
-            # img_ids = input.find_inputs[stage_id].img_ids
+            # img_ids = input.find_inputs[stage_id].img_ids # ??? what's this ???
             img_ids = input.flat_obj_to_img_idx[stage_id]
             if img_feats_already_computed:
                 # Retrieve image features according to img_ids (if they are already computed).

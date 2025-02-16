@@ -111,7 +111,6 @@ def organize_data(root_dir, new_folder):
     subfolders = ["JPEGImages", "Annotations", "Json"]
     for subfolder in subfolders:
         os.makedirs(os.path.join(new_folder, subfolder), exist_ok=True)
-    
     folder_prefixes = []  # Collect folder prefixes for checking
     for folder in os.listdir(root_dir):
         if '_post' in folder:
@@ -144,7 +143,7 @@ def organize_data(root_dir, new_folder):
                         img = Image.open(img_path)
 
                         # Load corresponding JSON
-                        json_folder = os.path.join(data_path.split(folder)[0], folder, folder+'_post_checked', data_folder.split('.')[0])
+                        json_folder = os.path.join(data_path.split(folder)[0], folder+'_post_checked', data_folder.split('.')[0])
                         json_file = os.path.join(json_folder, f"{image_name}.json")
                         with open(json_file, 'r') as f:
                             data = json.load(f)
@@ -198,7 +197,10 @@ def organize_data(root_dir, new_folder):
 root_directories = ['/home/jinghao/projects/dental_plague_detection/dataset/27_1_2025_revision/12_5/',
                     '/home/jinghao/projects/dental_plague_detection/dataset/27_1_2025_revision/9_26/' ]
 
-save_root_path = '/home/jinghao/projects/dental_plague_detection/dataset/plague_for_training_revised_27_1/'
+save_root_path = '/home/jinghao/projects/dental_plague_detection/dataset/plague_for_training_revised_15_2_1/'
+
+root_directories = ['/home/jinghao/projects/dental_plague_detection/dataset/15_2_2025_revision_1']
+
 
 for root_dir in root_directories:
     organize_data(root_dir, save_root_path)

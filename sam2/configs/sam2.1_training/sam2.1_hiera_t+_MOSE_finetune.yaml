@@ -1,16 +1,17 @@
 # @package _global_
 
 scratch:
-  resolution: 1280
+  resolution: 1024
   train_batch_size: 1
   num_train_workers: 16
   num_frames: 6
   num_frames_with_invalid: 8
+  num_multimask_outputs: 3
   max_num_objects: 4
-  base_lr: 1.0e-4 # 5.0e-6
-  vision_lr: 5.0e-05 # 3.0e-06
+  base_lr: 5.0e-5 # 5.0e-6
+  vision_lr: 3.0e-05 # 3.0e-06
   phases_per_epoch: 1
-  num_epochs: 50
+  num_epochs: 100
 dataset_train:
   # PATHS to Dataset
   img_folder: /home/jinghao/projects/dental_plague_detection/dataset/train/JPEGImages/
@@ -78,8 +79,8 @@ trainer:
       scalp: 1
       trunk:
         _target_: sam2.modeling.backbones.hieradet.Hiera
-        embed_dim: 96
-        num_heads: 1
+        embed_dim: 96 # 112 # 96
+        num_heads: 1 # 2 # 1
         stages: [1, 2, 7, 2]
         global_att_blocks: [5, 7, 9]
         window_pos_embed_bkg_spatial_size: [7, 7]
@@ -93,7 +94,7 @@ trainer:
           scale: null
           temperature: 10000
         d_model: 256
-        backbone_channel_list: [768, 384, 192, 96] # [896, 448, 224, 112]
+        backbone_channel_list: [768, 384, 192, 96] # [896, 448, 224, 112] # [768, 384, 192, 96] # [896, 448, 224, 112]
         fpn_top_down_levels: [2, 3]  # output level 0 and 1 directly use the backbone features
         fpn_interp_model: nearest
 
@@ -184,9 +185,10 @@ trainer:
     #       num_layers: 2
 
     is_class_agnostic: False # add by bryce
-    num_classes_for_mask: ${scratch.max_num_objects} # add by bryce
+    num_classes_for_mask: 3 # ${scratch.max_num_objects} # add by bryce
     num_frames: ${scratch.num_frames}
     num_frames_with_invalid: ${scratch.num_frames_with_invalid}
+    num_multimask_outputs: ${scratch.num_multimask_outputs}
     threshold_for_boxes: 0.1
     threshold_for_masks: 0.5
     num_maskmem: 5
@@ -201,7 +203,7 @@ trainer:
     # use high-resolution feature map in the SAM mask decoder
     use_high_res_features_in_sam: true
     # output 3 masks on the first click on initial conditioning frames
-    multimask_output_in_sam: false
+    multimask_output_in_sam: true # false changed by bryce
     # SAM heads
     iou_prediction_use_sigmoid: True
     # cross-attend to object pointers from other frames (based on SAM output tokens) in the encoder
@@ -216,9 +218,9 @@ trainer:
     fixed_no_obj_ptr: true # changed by bryce
     # multimask tracking settings
     multimask_output_for_tracking: false
-    use_multimask_token_for_obj_ptr: false
+    use_multimask_token_for_obj_ptr: true # false; changed by bryce 
     multimask_min_pt_num: 0
-    multimask_max_pt_num: 1
+    multimask_max_pt_num: 1000 # 1; changed by bryce 
     use_mlp_for_obj_ptr_proj: true
     # Compilation flag
     # compile_image_encoder: False
@@ -381,10 +383,10 @@ trainer:
         loss_boxes_ce: 10 # 5
         loss_boxes_xy: 1
         loss_boxes_hw: 1
-
+        
         # for image_classify
         loss_image_classify: 1
-
+      
       focal_alpha: 0.75 # for mask
       focal_gamma: 3
       focal_alpha_for_box: 0.75
@@ -446,13 +448,13 @@ trainer:
 
       state_dict:
         _target_: training.utils.checkpoint_utils.load_checkpoint_and_apply_kernels
-        checkpoint_path: /home/jinghao/projects/dental_plague_detection/Self-PPD/logs_lr1e-4_bblr5e-5_4_scales_twostage_class_weights_wd_focal0.75_again_100e/checkpoints/checkpoint.pt # PATH to SAM 2.1 checkpoint
+        checkpoint_path: /home/jinghao/projects/dental_plague_detection/Self-PPD/checkpoints/sam2.1_hiera_tiny.pt  # sam2.1_hiera_base_plus.pt # sam2.1_hiera_tiny.pt # PATH to SAM 2.1 checkpoint
         ckpt_state_dict_keys: ['model']
 
 launcher:
   num_nodes: 1
   gpus_per_node: 1
-  experiment_log_dir: logs_lr1e-4_bblr5e-5_4_scales_twostage_class_weights_wd_1280_50e # Path to log directory, defaults to ./sam2_logs/${config_name}
+  experiment_log_dir: logs_lr5e-5_bblr5e-5_4scales_twostage_class_weights_wd_512_100e_tiny # Path to log directory, defaults to ./sam2_logs/${config_name}
 
 # SLURM args if running on a cluster
 submitit:

@@ -102,7 +102,7 @@ class VOSDataset(VisionDataset):
                 segments = segment_loader.load(
                     frame.frame_idx, obj_ids=sampled_object_ids
                 )
-            else:
+            else: # here
                 segments = segment_loader.load(frame.frame_idx)
                 boxes, image_classify_gt = bbox_loader.load(frame.frame_idx)
                 for_check.append(image_classify_gt)

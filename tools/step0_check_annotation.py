@@ -173,9 +173,9 @@ def organize_data(root_dir):
                     check_and_resave_jsons(json_folder, json_save_dir)
 
 # 输入多个根目录路径
-root_directories = "/home/jinghao/projects/dental_plague_detection/dataset/27_1_2025_revision/"
+root_directories = "/home/jinghao/projects/dental_plague_detection/dataset/"
 
-date = [ '12_5',  '9_26',]
+date = [ '15_2_2025_revision_1',]
 # root_directories = ["/home/hust/haojing/dental_plague_dataset/10_24", ]
 # root_directories = '/home/hust/haojing/dental_plague_dataset/raw_data'
 # resaved_json_dir = '/home/hust/haojing/dental_plague_dataset/raw_data/resaved_json'

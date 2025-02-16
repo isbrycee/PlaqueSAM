@@ -10,7 +10,7 @@ from typing import List
 import numpy as np
 from training.dataset.vos_segment_loader import LazySegments
 
-MAX_RETRIES = 1000
+MAX_RETRIES = 1 # 1000
 
 
 @dataclass
@@ -53,33 +53,37 @@ class RandomUniformSampler(VOSSampler):
                 frames = frames[::-1]
 
             # Get first frame object ids
-            visible_object_ids = []
-            loaded_segms = segment_loader.load(frames[0].frame_idx)
-            if isinstance(loaded_segms, LazySegments):
-                # LazySegments for SA1BRawDataset
-                visible_object_ids = list(loaded_segms.keys())
-            else:
-                for object_id, segment in segment_loader.load(
-                    frames[0].frame_idx
-                ).items():
-                    if segment.sum():
-                        visible_object_ids.append(object_id)
+            # visible_object_ids = []
+            # loaded_segms = segment_loader.load(frames[0].frame_idx) # 0 -> 1; changed by bryce
+            # if isinstance(loaded_segms, LazySegments):
+            #     # LazySegments for SA1BRawDataset
+            #     visible_object_ids = list(loaded_segms.keys())
+            # else:
+            #     for object_id, segment in segment_loader.load(
+            #         frames[0].frame_idx
+            #     ).items():
+            #         if segment.sum():
+            #             visible_object_ids.append(object_id)
 
-            # First frame needs to have at least a target to track
-            if len(visible_object_ids) > 0:
-                break
-            if retry >= MAX_RETRIES - 1:
-                raise Exception("No visible objects")
+            # # First frame needs to have at least a target to track
+            # if len(visible_object_ids) > 0:
+            #     break
+            # if retry >= MAX_RETRIES - 1:
+            #     print(video.video_name)
+            #     raise Exception("No visible objects")
 
+        
         # object_ids = sorted(random.sample(
         #     visible_object_ids,
         #     min(len(visible_object_ids), self.max_num_objects), # change by bryce 
         # ))
+
         # add by bryce; for handle four categories gt [bg, tooth, plague, caries]
         # if len(object_ids) < self.max_num_objects:
         #     object_ids.append(np.uint8(3)) # 3rd class for caries
+        
         # fixed
-        # object_ids = [np.uint8(1), np.uint8(2), np.uint8(3)]
+        # object_ids = [np.uint8(1), np.uint8(2), np.uint8(3)] # [tooth, plague, caries]; 1,2,3 is the idx in the .png mask; 0 (background) is removed; 
         object_ids = [np.uint8(i) for i in range(self.max_num_objects)] # Fixing classes
 
         return SampledFramesAndObjects(frames=frames, object_ids=object_ids)
