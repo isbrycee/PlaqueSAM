@@ -2,10 +2,18 @@ import torch
 from torchmetrics.detection.mean_ap import MeanAveragePrecision
 from torchmetrics.classification import MulticlassJaccardIndex
 
+import os
 import matplotlib.pyplot as plt
 import numpy as np
 import cv2
 import time 
+import json
+import torchvision.transforms.functional as F
+from pycocotools import mask as mask_utils
+from skimage.measure import find_contours
+from pycocotools.coco import COCO
+from pycocotools.cocoeval import COCOeval
+
 
 # 全局颜色映射字典
 label_to_color = {}
@@ -90,23 +98,6 @@ def visualize_and_save_masks_for_instance(input_dict, save_path):
     plt.close()
     print(f'The visualization of mask is saved in {save_path}.')
 
-def compute_intersection(box1, box2):
-    """
-    计算两个矩形的交并比 (IoU)。
-    box1 和 box2 的格式为 [x_min, y_min, x_max, y_max]。
-    """
-    x1 = max(box1[0], box2[0])
-    y1 = max(box1[1], box2[1])
-    x2 = min(box1[2], box2[2])
-    y2 = min(box1[3], box2[3])
-
-    intersection = max(0, x2 - x1 + 1) * max(0, y2 - y1 + 1)
-    box1_area = (box1[2] - box1[0] + 1) * (box1[3] - box1[1] + 1)
-    box2_area = (box2[2] - box2[0] + 1) * (box2[3] - box2[1] + 1)
-
-    # union = box1_area + box2_area - intersection
-
-    return intersection / box1_area
 
 class InstanceSegmentationMetric:
     """
@@ -260,3 +251,198 @@ class InstanceSegmentationMetric:
         重置指标计算器。
         """
         self.mean_ap_metric.reset()
+
+
+class Postprocessor_for_Instance_Segmentation:
+    """
+    计算实例分割的指标（AP 和 mIoU）。
+    支持在循环中累加样本，最终计算整个数据集的指标。
+    """
+
+    def __init__(self, gt_json_path, num_mask_classes, saved_jsons_dir, device="cpu"):
+        """
+        初始化指标计算器。
+
+        :param num_box_classes: int，box 的类别总数（包括背景）。
+        :param num_mask_classes: int，mask 的类别总数（包括背景）。
+        :param device: str，计算设备（"cpu" 或 "cuda"）。
+        """
+        self.device = device
+        self.num_mask_classes = num_mask_classes
+        self.gt_json_path = gt_json_path
+        self.saved_jsons_dir = saved_jsons_dir
+
+        with open(gt_json_path, "r") as f:
+            coco_data = json.load(f)
+            self.coco_data = coco_data
+        
+        self.filename_to_image_id = self._extract_filename_to_image_id_mapping(self.coco_data)
+        self.pred_ins = []
+
+    def _extract_filename_to_image_id_mapping(self, coco_data):
+        # 初始化映射字典
+        filename_to_image_id = {}
+        
+        # 遍历 images 部分
+        for image_info in coco_data["images"]:
+            file_name = image_info["file_name"]
+            image_id = image_info["id"]
+            width = image_info["width"]
+            height = image_info["height"]
+            filename_to_image_id[file_name] = (image_id, (width, height))
+        
+        return filename_to_image_id
+    
+
+    def update(self, indices_to_reserve, outputs, valid_box_mask_pairs, video_name):
+
+        for t_frame, pred_boxes in valid_box_mask_pairs.items():
+            img_file_name = video_name + '/' + str(indices_to_reserve[t_frame]+1).zfill(3) + '.jpg'
+            # filter those images that are classfied wrong
+            if img_file_name in self.filename_to_image_id.keys():
+                img_id, (width, height) = self.filename_to_image_id[img_file_name]
+            else:
+                continue
+            for ids, (pred_cls, (pred_box, pred_score)) in enumerate(pred_boxes.items()):
+
+                all_pred_masks = outputs[t_frame]['multistep_pred_multimasks_high_res']
+                for pred_masks in all_pred_masks:
+                    pred_mask = pred_masks[ids]
+
+                    pred_mask = torch.argmax(pred_mask, dim=0)
+                    pred_mask = pred_mask.unsqueeze(0)
+                    
+                    foreground_masks = {}
+                    for cls in range(1, self.num_mask_classes + 1):
+                        cls_mask = (pred_mask == cls).long()
+                        if cls_mask.sum().item() > 0:
+                            foreground_masks[cls] = cls_mask.squeeze(0)
+
+                    for mask_id, mask_per_cls in foreground_masks.items():
+                        mask_id_map = {1: 2, 2: 1, 3: 3}
+
+                        category_id = pred_cls * self.num_mask_classes + (mask_id_map[mask_id] - 1)
+                        resized_mask = F.resize(mask_per_cls[None, None], (height, width)).squeeze().contiguous().cpu().numpy().astype(np.uint8)
+                        # resized_mask = self.binary_mask_to_polygon(resized_mask)
+                        resized_mask_rle = mask_utils.encode(np.asfortranarray(resized_mask))
+                        resized_mask_rle["counts"] = resized_mask_rle["counts"].decode("utf-8")
+
+                        pred_ins = {
+                                    "image_id": img_id,
+                                    "category_id": category_id,
+                                    "score": pred_score,
+                                    # "bbox": mask_utils.toBbox(resized_mask_rle).tolist(),  # 从 RLE 生成检测框, # error box coors
+                                    "segmentation": resized_mask_rle,
+                                }
+                        self.pred_ins.append(pred_ins)
+
+    def compute_coco_metrics_for_ins_seg(self, epoch):
+        """
+        使用 COCO API 计算实例分割的 mAP 和相关指标。
+        
+        Parameters:
+            predictions (list): 预测结果列表，COCO 格式，包含以下字段：
+                - 'image_id': 图像 ID
+                - 'category_id': 类别 ID
+                - 'score': 预测得分
+                - 'segmentation': RLE 格式的分割结果
+            coco_annotation_file (str): COCO 格式的标签文件路径。
+        
+        Returns:
+            dict: 包含 mAP 和其他指标的结果。
+        """
+        # 加载 COCO 格式的标签文件
+        if not os.path.exists(self.saved_jsons_dir):
+            os.makedirs(self.saved_jsons_dir)
+
+        _gt_json_path = os.path.join(self.saved_jsons_dir, "_gt_val.json")
+
+        if not (os.path.exists(_gt_json_path) and os.path.isfile(_gt_json_path)):
+            coco_annotations = self.convert_polygon_to_rle(self.coco_data)
+            # 将预测结果保存为 COCO 格式的 JSON 文件
+            with open(_gt_json_path, "w") as f:
+                json.dump(coco_annotations, f)
+
+        # 创建 COCO 对象
+        coco_gt = COCO(_gt_json_path)
+        epoch = str(epoch).zfill(3)
+        _pred_json_path = os.path.join(self.saved_jsons_dir, f"_pred_val_epoch_{epoch}.json")
+        # 将预测结果保存为 COCO 格式的 JSON 文件
+        with open(_pred_json_path, "w") as f: 
+            json.dump(self.pred_ins, f)
+        
+        # 加载预测结果
+        coco_dt = coco_gt.loadRes(_pred_json_path)
+        
+        # 初始化 COCOeval
+        coco_eval = COCOeval(coco_gt, coco_dt, iouType='segm')
+
+        # 运行评估
+        coco_eval.evaluate()
+        coco_eval.accumulate()
+        coco_eval.summarize()
+
+        # 提取指标
+        metrics = {
+            'AP': coco_eval.stats[0],  # AP @ [IoU=0.50:0.95]
+            'AP50': coco_eval.stats[1],  # AP @ [IoU=0.50]
+            'AP75': coco_eval.stats[2],  # AP @ [IoU=0.75]
+            'AP_small': coco_eval.stats[3],  # AP for small objects
+            'AP_medium': coco_eval.stats[4],  # AP for medium objects
+            'AP_large': coco_eval.stats[5],  # AP for large objects
+            'AR1': coco_eval.stats[6],  # AR @ max_dets=1
+            'AR10': coco_eval.stats[7],  # AR @ max_dets=10
+            'AR100': coco_eval.stats[8],  # AR @ max_dets=100
+            'AR_small': coco_eval.stats[9],  # AR for small objects
+            'AR_medium': coco_eval.stats[10],  # AR for medium objects
+            'AR_large': coco_eval.stats[11],  # AR for large objects
+        }
+    
+        return metrics
+
+
+    def convert_polygon_to_rle(self, coco_annotations):
+        """
+        将 COCO 格式的标签文件中的多边形分割转换为 RLE 格式（修复图像尺寸问题版）
+        
+        Parameters:
+            coco_annotations (dict): COCO 格式的标签文件内容
+        
+        Returns:
+            dict: 新的 COCO 标签文件内容，其中分割部分转换为 RLE 格式
+        """
+        # 创建image_id到图像信息的映射字典
+        image_map = {img['id']: img for img in coco_annotations['images']}
+        
+        for ann in coco_annotations['annotations']:
+            # 获取对应的图像信息
+            img_info = image_map.get(ann['image_id'])
+            if not img_info:
+                raise ValueError(f"Image ID {ann['image_id']} not found in images list")
+            
+            # 提取当前图像的实际尺寸
+            height, width = img_info['height'], img_info['width']
+            
+            # 转换多边形到RLE
+            polygons = ann['segmentation']
+            rle = mask_utils.frPyObjects(polygons, height, width)
+            merged_rle = mask_utils.merge(rle)
+            
+            # 转换counts为字符串格式
+            merged_rle['counts'] = merged_rle['counts'].decode('utf-8')
+            ann['segmentation'] = merged_rle
+            
+        return coco_annotations
+
+    def binary_mask_to_polygon(self, binary_mask):
+        contours, _ = cv2.findContours(
+            binary_mask.astype(np.uint8), 
+            cv2.RETR_EXTERNAL, 
+            cv2.CHAIN_APPROX_SIMPLE
+        )
+        segmentation = []
+        for contour in contours:
+            contour = contour.flatten().tolist()
+            if len(contour) >= 6:  # 至少需要3个点（6个坐标）
+                segmentation.append(contour)
+        return segmentation

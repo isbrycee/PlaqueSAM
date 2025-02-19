@@ -176,8 +176,8 @@ def sample_box_points(
     - box_labels: [B, num_pt], label 2 is reserverd for top left and 3 for bottom right corners, dtype=torch.int32
     """
     device = masks.device
-    B, _, H, W = masks.shape
-    B = 1 # add by bryce !!! note !!!
+    num_class_in_mask, B, H, W = masks.shape
+    
     if not is_provide_box:
         box_coords = mask_to_box(masks) # size [3, 1, 4]
         box_labels = torch.tensor(
@@ -185,10 +185,10 @@ def sample_box_points(
         ).repeat(B) # [2,3,2,3,2,3]
     else:
         num_box, _  = boxes['boxes'].shape
-        box_coords = boxes['boxes'].repeat(B, 1, 1).to(device) # size (3, 9, 4)
+        box_coords = boxes['boxes'].repeat(B, 1, 1).to(device) # size (1, 6, 4)
         box_labels = torch.tensor(
             [top_left_label, bottom_right_label], dtype=torch.int, device=device
-        ).repeat(num_box).repeat(B, 1) # [2,3,2,3,2,3]
+        ).repeat(num_box).repeat(B, 1) # [2,3,2,3,2,3] Size(1, 12)
 
     if noise > 0.0:
         if not isinstance(noise_bound, torch.Tensor):
@@ -210,11 +210,70 @@ def sample_box_points(
         box_coords = box_coords.reshape(-1, 2, 2)  # always 2 points size(3,2,2)
         box_labels = box_labels.reshape(-1, 2) # size(3,2)
     else:
-        box_coords = box_coords.reshape(B, -1, 2)  # always 2 points size(3,2,2)
-        box_labels = box_labels.reshape(B, -1) # size(3,2)
+        box_coords = box_coords.reshape(B, -1, 2)  # always 2 points size(1,12,2)
+        box_labels = box_labels.reshape(B, -1) # size(1,12)
     return box_coords, box_labels
 
+def sample_batched_one_box_points(
+    masks: torch.Tensor,
+    is_provide_box: bool,
+    boxes: None,
+    noise: float = 0.1,  # SAM default
+    noise_bound: int = 20,  # SAM default
+    top_left_label: int = 2,
+    bottom_right_label: int = 3,
+) -> Tuple[np.array, np.array]:
+    """
+    Sample a noised version of the top left and bottom right corners of a given `bbox`
 
+    Inputs:
+    - masks: [B, 1, H, W] boxes, dtype=torch.Tensor
+    - noise: noise as a fraction of box width and height, dtype=float
+    - noise_bound: maximum amount of noise (in pure pixesl), dtype=int
+
+    Returns:
+    - box_coords: [B, num_pt, 2], contains (x, y) coordinates of top left and bottom right box corners, dtype=torch.float
+    - box_labels: [B, num_pt], label 2 is reserverd for top left and 3 for bottom right corners, dtype=torch.int32
+    """
+    device = masks.device
+    num_class_in_mask, B, H, W = masks.shape
+    
+    if not is_provide_box: # in case of no box prompt input; overwise will raise error
+        # box_coords = mask_to_box(masks) # size [3, 1, 4]
+        # box_labels = torch.tensor(
+        #     [top_left_label, bottom_right_label], dtype=torch.int, device=device
+        # ).repeat(B) # [2,3,2,3,2,3]
+        box_coords = torch.zeros(1, 1, 2, device=device)
+        box_labels = -torch.ones(1, 1, dtype=torch.int32, device=device)
+
+        return box_coords, box_labels
+    else:
+        num_box = len(boxes)
+        box_coords = torch.stack([torch.tensor(item[0]) for item in boxes.values()]).unsqueeze(1).to(device)
+        box_labels = torch.tensor(
+            [top_left_label, bottom_right_label], dtype=torch.int, device=device
+        ).repeat(num_box, 1) # [2,3,2,3,2,3]
+
+    if noise > 0.0:
+        if not isinstance(noise_bound, torch.Tensor):
+            noise_bound = torch.tensor(noise_bound, device=device)
+        bbox_w = box_coords[..., 2] - box_coords[..., 0]
+        bbox_h = box_coords[..., 3] - box_coords[..., 1]
+        max_dx = torch.min(bbox_w * noise, noise_bound)
+        max_dy = torch.min(bbox_h * noise, noise_bound)
+        box_noise = 2 * torch.rand(B, 1, 4, device=device) - 1
+        box_noise = box_noise * torch.stack((max_dx, max_dy, max_dx, max_dy), dim=-1)
+
+        box_coords = box_coords + box_noise
+        img_bounds = (
+            torch.tensor([W, H, W, H], device=device) - 1
+        )  # uncentered pixel coords
+        box_coords.clamp_(torch.zeros_like(img_bounds), img_bounds)  # In place clamping
+        
+    box_coords = box_coords.reshape(-1, 2, 2)  # always 2 points size(3,2,2)
+    box_labels = box_labels.reshape(-1, 2) # size(3,2)
+
+    return box_coords, box_labels
 
 def sample_random_points_from_errors(gt_masks, pred_masks, num_pt=1):
     """

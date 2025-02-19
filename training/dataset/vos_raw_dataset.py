@@ -27,6 +27,15 @@ from training.dataset.vos_segment_loader import (
     JsonBBoxLoader,
 )
 
+from pycocotools import mask as mask_utils
+from pycocotools.coco import COCO
+from collections import defaultdict
+import numpy as np
+import cv2
+
+from training.utils.mask_RLE_utils import encode_mask_rle, decode_mask_rle
+
+
 
 @dataclass
 class VOSFrame:
@@ -60,6 +69,7 @@ class PNGRawDataset(VOSRawDataset):
         img_folder,
         gt_folder,
         gt_box_folder, # add by bryce
+        gt_ins_seg_json, # add by bryce
         file_list_txt=None,
         excluded_videos_list_txt=None,
         sample_rate=1,
@@ -71,6 +81,7 @@ class PNGRawDataset(VOSRawDataset):
         self.img_folder = img_folder
         self.gt_folder = gt_folder
         self.gt_box_folder = gt_box_folder
+        self.gt_ins_seg_json_path = gt_ins_seg_json
         self.sample_rate = sample_rate
         self.is_palette = is_palette
         self.single_object_mode = single_object_mode
@@ -111,6 +122,123 @@ class PNGRawDataset(VOSRawDataset):
                 num_frames = len(os.listdir(os.path.join(self.img_folder, video_name)))
                 video_names_mult.extend([video_name] * num_frames)
             self.video_names = video_names_mult
+        
+        # add by bryce
+        # {10_10_11/005:{1:((x1,y1,w,h), numpy(mask))}, ...}
+        self.box_mask_pairs_dict = self._load_box2innerMask_per_img(self.gt_ins_seg_json_path)
+
+    def visualize_masks(self, result_dict, save_dir, color_map=None):
+        """
+        可视化合并后的mask和bbox
+        :param result_dict: 前一个函数返回的字典
+        :param save_dir: 可视化结果保存路径
+        :param color_map: 自定义颜色映射字典，格式为 {子类值: (B,G,R)}
+        """
+        # 默认颜色映射（BGR格式）
+        default_colors = {
+            1: (0, 0, 255),    # 红色：0_np
+            2: (0, 255, 0),    # 绿色：0_p
+            3: (255, 0, 0)     # 蓝色：0_caries
+        }
+        color_map = color_map or default_colors
+        
+        os.makedirs(save_dir, exist_ok=True)
+
+        for img_id, img_data in result_dict.items():
+            # 获取图片尺寸（假设所有类别的mask尺寸相同）
+            sample_mask = next(iter(img_data.values()))[1]
+            h, w = sample_mask.shape
+            # 创建空白画布
+            canvas = np.zeros((h, w, 3), dtype=np.uint8)
+
+
+            for merged_id, (bbox, class_mask) in img_data.items():
+                # 绘制子类区域
+                for value, color in color_map.items():
+                    canvas[class_mask == value] = color
+                
+                # 绘制边界框（跳过无效bbox）
+                if bbox != [0, 0, 0, 0]:
+                    x, y, bw, bh = [int(v) for v in bbox]
+                    cv2.rectangle(canvas, 
+                                (x, y),
+                                (x + bw, y + bh),
+                                color=(255, 255, 255),  # 白色边框
+                                thickness=2)
+                
+            # 保存结果
+            img_id = img_id.replace('/', '_')
+            filename = f"img_{img_id}.png"
+            cv2.imwrite(os.path.join(save_dir, filename), canvas)
+            print(f'save to {filename}')
+
+    # add by bryce
+    def _load_box2innerMask_per_img(self, gt_ins_seg_json_path):
+        """
+        load box-semantic mask from the coco_ins_seg_json
+        Args:
+            gt_ins_seg_json_path: json path following COCO Instance Seg
+        Return:
+            box-mask pairs: dict('10_20_1/001': numpy(1, img_w, img_h))
+        """
+        # 加载COCO数据集
+        coco = COCO(gt_ins_seg_json_path)
+        
+        # 构建类别映射字典
+        category_mapping = {}
+        suffix_values = {'p': 2, 'np': 1, 'caries': 3}
+        for cat in coco.dataset['categories']:
+            prefix, suffix = cat['name'].split('_')
+            merged_id = int(prefix)
+            sub_value = suffix_values[suffix]
+            category_mapping[cat['id']] = (merged_id, sub_value)
+        
+        # 初始化结果字典
+        result_dict = {}
+        
+        # 处理每张图片
+        for img_id in coco.getImgIds():
+            img_info = coco.loadImgs(img_id)[0]
+            ann_ids = coco.getAnnIds(imgIds=img_id)
+            annotations = coco.loadAnns(ann_ids)
+            
+            # 按合并后的类别分组
+            merged_groups = defaultdict(list)
+            for ann in annotations:
+                original_cat_id = ann['category_id']
+                merged_id, sub_value = category_mapping[original_cat_id]
+                merged_groups[merged_id].append((ann, sub_value))
+            
+            # 处理每个合并后的类别组
+            img_dict = {}
+            for merged_id, group in merged_groups.items():
+                # 创建全零矩阵
+                height, width = img_info['height'], img_info['width']
+                combined_mask = np.zeros((height, width), dtype=np.uint8)
+                class_mask = np.zeros((height, width), dtype=np.uint8)
+                
+                # 合并mask并生成类别矩阵
+                for ann, sub_value in group:
+                    ann_mask = coco.annToMask(ann)
+                    combined_mask = np.logical_or(combined_mask, ann_mask)
+                    class_mask[ann_mask == 1] = sub_value  # 最后出现的会覆盖之前的
+                    
+                    
+                # 计算外接矩形
+                if np.any(combined_mask):
+                    rle = mask_utils.encode(np.asfortranarray(combined_mask))
+                    bbox = mask_utils.toBbox(rle).tolist()
+                    # print(np.unique(class_mask))
+                    rle_box_mask_pair = encode_mask_rle(np.asfortranarray(class_mask))
+                    img_dict[merged_id] = (bbox, rle_box_mask_pair)
+                else:
+                    img_dict[merged_id] = ([0, 0, 0, 0], class_mask)
+            
+            result_dict[img_info['file_name'][:-4]] = img_dict
+
+        # self.visualize_masks(result_dict, "/home/jinghao/projects/dental_plague_detection/dataset/visual_tmp")
+        return result_dict
+
 
     def get_video(self, idx):
         """
@@ -135,7 +263,14 @@ class PNGRawDataset(VOSRawDataset):
             )
         # add by bryce
         video_box_root = os.path.join(self.gt_box_folder, video_name)
-        bbox_loader = JsonBBoxLoader(video_box_root)
+
+        # get annos for specific person
+        box_mask_pairs_dict_per_video = {}
+        for k, v in self.box_mask_pairs_dict.items():
+            if video_name in k:
+                box_mask_pairs_dict_per_video[k] = v
+
+        bbox_loader = JsonBBoxLoader(video_box_root, box_mask_pairs_dict_per_video)
 
         all_frames = sorted(glob.glob(os.path.join(video_frame_root, "*.jpg")))
         if self.truncate_video > 0:

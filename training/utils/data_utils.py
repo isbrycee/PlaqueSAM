@@ -50,7 +50,8 @@ class BatchedVideoDatapoint:
     masks: torch.BoolTensor
     masks_for_semantic_seg: torch.IntTensor # add by bryce
     boxes: dict # id: box[[x1, y1], [x2, y2]] # add by bryce
-    image_classify: list
+    image_classify: list # add by bryce
+    box_mask_pairs: list # add by bryce
     metadata: BatchedVideoMetaData
 
     dict_key: str
@@ -107,6 +108,7 @@ class Frame:
     objects: List[Object]
     boxes: dict
     image_classify: int
+    box_mask_pairs: dict
 
 
 @dataclass
@@ -142,6 +144,7 @@ def collate_fn(
     # step_t_boxes = {i:None for i in range(T)} # add by bryce
     step_t_boxes = [] # add by bryce
     step_t_image_classify = [] # add by bryce
+    step_t_box_mask_pairs = [] # add by bryce
     step_t_obj_to_frame_idx = [
         [] for _ in range(T)
     ]  # List to store frame indices for each time step
@@ -171,18 +174,13 @@ def collate_fn(
             merged_meta_box_info = [item for sublist in meta_box_info.values() for item in sublist]
             merged_meta_box_info = torch.tensor(merged_meta_box_info, dtype=torch.float64)
             # for classes
-            
-            # for filter bad cagegory names
-            # for sublist in meta_box_info.keys():
-            #     if '_' in sublist:
-            #         sublist = sublist.split('_')[0]
-            # merged_meta_class_info = [sublist for sublist in meta_box_info.keys()]
-
             merged_meta_class_info =  list(meta_box_info.keys())
             merged_meta_class_info = torch.tensor(merged_meta_class_info, dtype=torch.int64)
             # step_t_boxes[t] = merged_meta_box_info.reshape(-1, 2, 2)
             step_t_boxes.append({'labels':merged_meta_class_info, 'boxes': merged_meta_box_info.reshape(-1, 4)}) 
             step_t_image_classify.append(frame.image_classify - 1) # index start from 0; 
+            # for box-mask pairs (e.g., single box prompt with its corresponding mask)
+            step_t_box_mask_pairs.append(frame.box_mask_pairs)
             # end; add by bryce
             for obj in objects:
                 orig_obj_id = obj.object_id
@@ -213,7 +211,6 @@ def collate_fn(
         dim=0,
     )
 
-
     masks = torch.stack([torch.stack(masks, dim=0) for masks in step_t_masks], dim=0)
     masks_for_semantic_seg = torch.argmax(masks.float(), dim=1, keepdim=True)
     objects_identifier = torch.stack(
@@ -224,6 +221,7 @@ def collate_fn(
     )
     boxes = step_t_boxes # add by bryce
     image_classify = step_t_image_classify # add by bryce
+    box_mask_pairs = step_t_box_mask_pairs
     
     return BatchedVideoDatapoint(
         img_batch=img_batch,
@@ -232,6 +230,7 @@ def collate_fn(
         masks_for_semantic_seg=masks_for_semantic_seg,
         boxes=boxes, # add by bryce
         image_classify=image_classify, # add by bryce
+        box_mask_pairs=box_mask_pairs,
         metadata=BatchedVideoMetaData(
             unique_objects_identifier=objects_identifier,
             frame_orig_size=frame_orig_size,

@@ -60,8 +60,10 @@ from setCriterion import SetCriterion, HungarianMatcher, ImageClassificationLoss
 from sam2.modeling.box_decoder import PostProcess
 from dataset.mAPCalculator import MAPCalculator
 from torchmetrics.classification import MulticlassJaccardIndex, Accuracy
-from utils.MaskAP_instance_metrics import InstanceSegmentationMetric
+from utils.MaskAP_instance_metrics import InstanceSegmentationMetric, Postprocessor_for_Instance_Segmentation
 from training.utils.box_ops import box_norm_cxcywh_to_unnorm_xyxy, box_normalize_xyxy_to_cxcywh
+import matplotlib.pyplot as plt
+
 
 CORE_LOSS_KEY = "core_loss"
 
@@ -138,6 +140,7 @@ class CheckpointConf:
 @dataclass
 class LoggingConf:
     log_dir: str
+    saved_jsons_dir: str
     log_freq: int  # In iterations
     tensorboard_writer: Any
     log_level_primary: str = "INFO"
@@ -465,10 +468,64 @@ class Trainer:
     def is_intermediate_val_epoch(self, epoch):
         return epoch % self.val_epoch_freq == 0 and epoch < self.max_epochs - 1
 
+    def visualize_semantic_segmentation(self, tensor, save_path="output.png"):
+        """
+        可视化语义分割结果，将 (N, 1024, 1024) 的张量可视化为 N 张子图，并保存到一张大图上。
+
+        参数:
+            tensor (torch.Tensor): 输入的张量，形状为 (N, 1024, 1024)，像素值为 0/1/2/3。
+            save_path (str): 保存图像的路径，默认为 "output.png"。
+        """
+        # 确保输入张量的形状正确
+        assert tensor.ndim == 3, "输入张量的形状必须为 (N, 1024, 1024)"
+
+        num_images, h, w = tensor.shape # 获取图像数量
+        rows = int(np.ceil(np.sqrt(num_images)))  # 计算子图的行数
+        cols = int(np.ceil(num_images / rows))    # 计算子图的列数
+
+        # 定义类别对应的颜色映射
+        cmap = plt.cm.get_cmap('viridis', 4)  # 4 个类别 (0, 1, 2, 3)
+        class_colors = {
+            0: cmap(0),  # 类别 0 的颜色
+            1: cmap(1),  # 类别 1 的颜色
+            2: cmap(2),  # 类别 2 的颜色
+            3: cmap(3),  # 类别 3 的颜色
+        }
+
+        # 创建一个大图，动态调整子图布局
+        fig, axes = plt.subplots(rows, cols, figsize=(cols * 5, rows * 5))
+        axes = axes.ravel()  # 将二维的 axes 展平为一维
+
+        # 遍历每个子图并绘制
+        for i in range(num_images):
+            ax = axes[i]
+            img = tensor[i].cpu().numpy()  # 将张量转换为 NumPy 数组
+            print(np.unique(img))
+            colored_img = np.zeros((h, w, 3))  # 创建一个 RGB 图像
+
+            # 根据类别值填充颜色
+            for class_id, color in class_colors.items():
+                colored_img[img == class_id] = color[:3]  # 只取 RGB 值，忽略 alpha
+
+            ax.imshow(colored_img)
+            ax.set_title(f"Image {i+1}")
+            ax.axis('off')  # 关闭坐标轴
+
+        # 隐藏多余的子图
+        for i in range(num_images, rows * cols):
+            axes[i].axis('off')
+        
+        # 调整布局并保存图像
+        plt.tight_layout()
+        plt.savefig(save_path)
+
+
     def _get_pred_classification_info_for_evaluate(self, outputs_for_image_classify, targets_image_classify):
-        # pred_classes = torch.argmax(outputs_for_image_classify, dim=1)
-        pred_image_classify_processed = outputs_for_image_classify.to(self.device)
         targets_classes = targets_image_classify.to(self.device)
+        if outputs_for_image_classify:
+            pred_image_classify_processed = outputs_for_image_classify.to(self.device)
+        else:
+            pred_image_classify_processed = targets_classes
         return pred_image_classify_processed, targets_classes
         
 
@@ -504,13 +561,16 @@ class Trainer:
         return pred_masks_for_eval, gt_masks_for_eval
 
 
-    def _get_pred_masks_info_for_evaluate_semantic_Seg(self, outputs_for_masks, gt_for_masks, score_threshod=0.5):
+    def _get_pred_masks_info_for_evaluate_semantic_Seg(self, outputs_for_masks, gt_for_masks, use_one_box_per_prompt):
         masks_pred_list = []
         for pred_mask_logits in outputs_for_masks:
             pred_mask_softmax = torch.softmax(pred_mask_logits['multistep_pred_multimasks_high_res'][0], dim=1)
             
             # 沿着类别通道维度（dim=1）找到最大索引
             pred_mask = torch.argmax(pred_mask_softmax, dim=1).int()  # 直接保持维度
+            # self.visualize_semantic_segmentation(pred_mask)
+            if use_one_box_per_prompt:
+                pred_mask, _ = torch.max(pred_mask, dim=0, keepdim=True)
 
             masks_pred_list.append(pred_mask)
             
@@ -569,9 +629,14 @@ class Trainer:
         model: nn.Module,
         phase: str,
     ):
-        outputs, outputs_for_boxes, output_for_two_stage, pred_image_classifiy_logits, pred_image_classify_processed, indices_to_reserve = model(batch, phase)
+        outputs, outputs_for_boxes, output_for_two_stage, pred_image_classifiy_logits, pred_image_classify_processed, indices_to_reserve, valid_box_mask_pairs = model(batch, phase)
+
+
+        use_one_box_per_prompt = True
+
         targets = batch.masks[indices_to_reserve] # (6, 3, 256, 256)
         targets_for_semantic_seg = batch.masks_for_semantic_seg[indices_to_reserve].to(torch.int64)
+        targets_for_semantic_seg_per_box_prompt = [batch.box_mask_pairs[ids] for ids in indices_to_reserve]
         # for visualize gt mask
         # import matplotlib.pyplot as plt
         # ================================ for visual gt ================================
@@ -579,8 +644,12 @@ class Trainer:
         # tensor_np = draw_Data.reshape(-1, self.model_conf.image_size, self.model_conf.image_size).cpu().detach().numpy()  # 转换为(18, 256, 256)
 
         # ================================ for visual pred ================================
-        # draw_Data = torch.sigmoid(outputs[0]['pred_masks_high_res'])
+        draw_Data = torch.argmax(outputs[0]['multistep_pred_multimasks_high_res'][0], dim=1).int()
+        # torch.max(pred_mask, dim=0, keepdim=True)
+
         # draw_Data = torch.where((draw_Data > 0.5).to(float)==1, 255, 0)
+
+        # self.visualize_semantic_segmentation(draw_Data) # (8, 512, 512)
         # tensor_np = draw_Data.reshape(-1, self.model_conf.image_size, self.model_conf.image_size).cpu().detach().numpy()  # 转换为(18, 256, 256)
         # # 设置图像显示的行数和列数
         # nrows = 4
@@ -605,8 +674,11 @@ class Trainer:
         device = targets.device
         key = batch.dict_key  # key for dataset
         # loss = self.loss[key](outputs, targets)
-        loss = self.loss[key](outputs, targets_for_semantic_seg) # add by bryce
-        
+        if self.model_conf.use_one_box_per_prompt:
+            loss = self.loss[key](outputs, targets_for_semantic_seg_per_box_prompt, use_one_box_per_prompt=True, mode=phase) # add by bryce
+        else:
+            loss = self.loss[key](outputs, targets_for_semantic_seg, use_one_box_per_prompt=False, mode=phase) # add by bryce
+
         # add by bryce; loss for boxes & evaluation for box
         targets_boxes = [batch.boxes[indx] for indx in indices_to_reserve] # dict({0:size(9,2,2)})
         targets_boxes_xyxy_unnorm = copy.deepcopy(targets_boxes)
@@ -626,7 +698,7 @@ class Trainer:
         for k, v in loss_boxes.items():
             new_key = k.split('_')[0] + '_boxes_' + k.split('_')[1]
             loss[new_key] = v
-        # for aux prediction supervision
+        # for aux box prediction supervision
         aux_outputs_boxes = self._set_aux_loss_for_box_decoder(outputs_for_boxes['box_decoder_pred_cls'], 
                                                outputs_for_boxes['box_decoder_pred_boxes'])
         aux_loss_boxes_list = []
@@ -688,10 +760,8 @@ class Trainer:
             # plt.close()  # 关闭绘图窗口
             ############## end for box vis, check box ###################
             # preds_masks, targets_masks = self._get_pred_masks_info_for_evaluate(outputs, targets, self.model_conf.threshold_for_masks)
-            preds_masks, targets_masks = self._get_pred_masks_info_for_evaluate_semantic_Seg(outputs, targets_for_semantic_seg, self.model_conf.threshold_for_masks)
+            preds_masks, targets_masks = self._get_pred_masks_info_for_evaluate_semantic_Seg(outputs, targets_for_semantic_seg, self.model_conf.use_one_box_per_prompt)
 
-
-            
             preds_classes, targets_classes = self._get_pred_classification_info_for_evaluate(pred_image_classify_processed, targets_image_classify)
         # 
         
@@ -740,7 +810,7 @@ class Trainer:
         if phase == 'train':
             return ret_tuple
         elif phase == 'val':
-            return ret_tuple, preds_boxes, targets_boxes, preds_masks, targets_masks, preds_classes, targets_classes
+            return ret_tuple, preds_boxes, targets_boxes, preds_masks, targets_masks, preds_classes, targets_classes, indices_to_reserve, outputs, valid_box_mask_pairs
 
     def run(self):
         assert self.mode in ["train", "train_only", "val"]
@@ -761,6 +831,7 @@ class Trainer:
             self.run_train()
 
     def _setup_dataloaders(self):
+        start_time = time.time()  
         self.train_dataset = None
         self.val_dataset = None
 
@@ -768,9 +839,14 @@ class Trainer:
             self.val_dataset = instantiate(self.data_conf.get(Phase.VAL, None))
             # add by bryce
             self.train_dataset = instantiate(self.data_conf.train)
-
-        if self.mode in ["train", "train_only"]:
+            elapsed_time = time.time() - start_time 
+            print(f"The time for loading datasets: {elapsed_time:.2f} s")
+            return
+        
+        if self.mode in ["train_only"]:
             self.train_dataset = instantiate(self.data_conf.train)
+            elapsed_time = time.time() - start_time
+            print(f"The time for loading datasets: {elapsed_time:.2f} s")
 
     def run_train(self):
 
@@ -869,6 +945,9 @@ class Trainer:
         accuracy_calculator = Accuracy(task="multiclass", num_classes=self.model_conf.image_classify_decoder.num_classes).to(self.device)
         MaskmAP_calculator = InstanceSegmentationMetric(num_box_classes=30, num_mask_classes=self.model_conf.num_classes_for_mask, device=self.device)
 
+        gt_json_path = self.data_conf.val.datasets[0].dataset.datasets[0].video_dataset.gt_ins_seg_json
+        Ins_Seg_postprocessor = Postprocessor_for_Instance_Segmentation(gt_json_path, self.model_conf.num_classes_for_mask, self.logging_conf.saved_jsons_dir, device=self.device)
+
         for data_iter, batch in enumerate(val_loader):
             # measure data loading time
             data_time.update(time.time() - end)
@@ -885,12 +964,13 @@ class Trainer:
                     ),
                 ):
                     for phase, model in zip(curr_phases, curr_models):
-                        ret_tuple, preds_boxes, targets_boxes, preds_masks, targets_masks, preds_classes, targets_classes = self._step(
+                        ret_tuple, preds_boxes, targets_boxes, preds_masks, targets_masks, preds_classes, \
+                        targets_classes, indices_to_reserve, outputs, valid_box_mask_pairs = self._step(
                             batch,
                             model,
                             phase,
                         )
-                        map_calculator.update(preds_boxes, targets_boxes) # add by bryce for compute mAP
+                        map_calculator.update(preds_boxes, targets_boxes) # add by bryce for compute box mAP
                         mIoU_calculator.update(preds_masks, targets_masks) # add by bryce for compute mIoU
                         # if not torch.equal(preds_classes, targets_classes):
                         #     print(batch.metadata.video_name)
@@ -898,6 +978,8 @@ class Trainer:
                         #     print('target:', targets_classes)
                         accuracy_calculator.update(preds_classes, targets_classes) # add by bryce for compute image classification accuracy
                         MaskmAP_calculator.update(preds_boxes, targets_boxes, preds_masks, targets_masks)
+                        Ins_Seg_postprocessor.update(indices_to_reserve, outputs, valid_box_mask_pairs, batch.metadata.video_name)
+
 
                         loss_dict, batch_size, extra_losses = ret_tuple
                         assert len(loss_dict) == 1
@@ -971,22 +1053,35 @@ class Trainer:
         box_MaskmAP_results = MaskmAP_calculator.compute()
         logging.info(f"Instance Segmentation mAP Results: {box_MaskmAP_results}")
 
-        # 表头和数据
-        header = "|  Acc  |  mAP  |  mIoU  |"
-        separator = "+-------+-------+--------+"
-        data_row = f"| {classification_acc_results:^5.3f} | {box_mAP_results['map']:^5.3f} | {mask_mIoU_results:^6.3f} |"
+        # add by bryce; for Metrics logging; for compute ins seg ap
+        ins_seg_metrics = Ins_Seg_postprocessor.compute_coco_metrics_for_ins_seg(self.epoch)
+
+        header1 = "|   Acc   |  Box mAP  |  Box AP50  | Semantic mIoU |"
+        separator1 = "+---------+-----------+------------+---------------+"
+        data_row1 = f"| {classification_acc_results:^7.3f} | {box_mAP_results['map']:^9.3f} | {box_mAP_results['map_50']:^10.3f} | {mask_mIoU_results:^13.3f} |"
+
+        header2 = "|   mAP   |   AP50   |   AP75   |  AP_small | AR_medium | AR_large |"
+        separator2 = "+---------+----------+----------+-----------+-----------+----------+"
+        data_row2 = f"| {ins_seg_metrics['AP']:^7.3f} | {ins_seg_metrics['AP50']:^8.3f} | {ins_seg_metrics['AP75']:^8.3f} | {ins_seg_metrics['AP_small']:^9.3f} | {ins_seg_metrics['AR_medium']:^9.3f} | {ins_seg_metrics['AR_large']:^8.3f} |"
         # 输出表格
-        logging.info(separator)
-        logging.info(header)
-        logging.info(separator)
-        logging.info(data_row)
-        logging.info(separator)
+        logging.info(separator1)
+        logging.info(header1)
+        logging.info(separator1)
+        logging.info(data_row1)
+        logging.info(separator1)
+
+        logging.info(separator2)
+        logging.info(header2)
+        logging.info(separator2)
+        logging.info(data_row2)
+        logging.info(separator2)
+        
 
         # save ckp; add by bryce
-        if box_MaskmAP_results['ap']['map_50'] > self.best_val_ins_seg_50:
-            self.best_val_ins_seg_50 = box_MaskmAP_results['ap']['map_50']
+        if ins_seg_metrics['AP50'] > self.best_val_ins_seg_50:
+            self.best_val_ins_seg_50 = ins_seg_metrics['AP50']
             self.save_checkpoint(self.epoch + 1, ['best_ins_seg_map50'])
-            logging.info(f"Best checkpoint has been saved. The current best instance segmentatiom map_50 is : {self.best_val_ins_seg_50}")
+            logging.info(f"Best checkpoint has been saved in epoch {self.epoch}. The current best instance segmentatiom map_50 is : {self.best_val_ins_seg_50}")
         return out_dict
 
     def _get_trainer_state(self, phase):

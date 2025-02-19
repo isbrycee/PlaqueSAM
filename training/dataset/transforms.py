@@ -22,7 +22,11 @@ from PIL import Image as PILImage
 from torchvision.transforms import InterpolationMode
 
 from training.utils.data_utils import VideoDatapoint
+from pycocotools import mask as mask_utils
+from scipy.ndimage import zoom
 
+import numpy as np
+from training.utils.mask_RLE_utils import encode_mask_rle, decode_mask_rle
 
 # add by bryce
 def flip_points_left_right(points, width):
@@ -66,6 +70,23 @@ def resize_rects(rects, orig_width, orig_height, new_width, new_height):
         resized_rects[name] = resized_points
     return resized_rects
 
+
+def resize_rects_for_box_mask_pairs(rects, orig_width, orig_height, new_width, new_height):
+    if isinstance(rects, tuple):
+        rects = rects[0]
+    resized_rects = {}
+    for name, points_mask_tuple in rects.items():
+        points, encoded_mask = points_mask_tuple
+        x1,y1,x2,y2 = points
+        resized_points_x1_y1 = resize_points([[x1,y1]], orig_width, orig_height, new_width, new_height)
+        resized_points_x2_y2 = resize_points([[x2,y2]], orig_width, orig_height, new_width, new_height)
+        resized_points_list = resized_points_x1_y1[0] + resized_points_x2_y2[0]
+
+        decoded_mask = decode_mask_rle(encoded_mask)
+        resized_mask = F.resize(torch.from_numpy(decoded_mask)[None, None], (new_height, new_width)).squeeze().contiguous()
+        resized_encoded_mask = encode_mask_rle(np.asfortranarray(resized_mask.numpy()))
+        resized_rects[name] = (resized_points_list, resized_encoded_mask)
+    return resized_rects
 
 def hflip(datapoint, index):
 
@@ -147,6 +168,9 @@ def resize(datapoint, index, size, max_size=None, square=False, v2=False):
 
     # add by bryce, for resize box coords
     datapoint.frames[index].boxes = resize_rects(datapoint.frames[index].boxes, old_size[0], old_size[1], new_size[0], new_size[1])
+    # add by bryce, for resize box-mask pair 
+    datapoint.frames[index].box_mask_pairs = resize_rects_for_box_mask_pairs(datapoint.frames[index].box_mask_pairs, old_size[0], old_size[1], new_size[0], new_size[1])
+
     return datapoint
 
 

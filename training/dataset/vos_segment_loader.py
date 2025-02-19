@@ -231,16 +231,16 @@ class MultiplePNGSegmentLoader:
 # add by bryce 
 # for load bbox info
 class JsonBBoxLoader:
-    def __init__(self, video_png_root):
+    def __init__(self, video_json_root, box_mask_pairs_dict):
         """
         SegmentLoader for datasets with masks stored as palettised PNGs.
         video_png_root: the folder contains all the masks stored in png
         """
-        self.video_png_root = video_png_root
+        self.video_json_root = video_json_root
         # build a mapping from frame id to their PNG mask path
         # note that in some datasets, the PNG paths could have more
         # than 5 digits, e.g. "00000000.png" instead of "00000.png"
-        png_filenames = os.listdir(self.video_png_root)
+        png_filenames = os.listdir(self.video_json_root)
         self.frame_id_to_png_filename = {}
         for filename in png_filenames:
             frame_id, _ = os.path.splitext(filename)
@@ -293,8 +293,9 @@ class JsonBBoxLoader:
                             '82/83':28,
                             '81/82': 28,
                             }
-
-
+        
+        self.box_mask_pairs_dict = box_mask_pairs_dict
+  
     def load(self, frame_id):
         """
         load the single palettised mask from the disk (path: f'{self.video_png_root}/{frame_id:05d}.png')
@@ -304,14 +305,14 @@ class JsonBBoxLoader:
             binary_segments: dict
         """
         # check the path
-        mask_path = os.path.join(
-            self.video_png_root, self.frame_id_to_png_filename[frame_id]
+        json_path = os.path.join(
+            self.video_json_root, self.frame_id_to_png_filename[frame_id]
         )
-
+        
         # load the json
         className_to_boxXYXY = {}
         className_for_image_classify = -1
-        with open(mask_path, 'r') as f:
+        with open(json_path, 'r') as f:
             json_info = json.load(f)
             for item in json_info['shapes']:
                 if item['shape_type'] == 'rectangle':
@@ -330,34 +331,21 @@ class JsonBBoxLoader:
                     
                     className = self.class_name_to_idx_map[className]
                     className_to_boxXYXY[className] = boxXYXY
-
-        # with open(mask_path, 'r') as f:
-            # json_info = json.load(f)
-            # for item in json_info['shapes']:
-            #     className = item['label']
-            #     if 'mouth_' in className:
-            #         className_for_image_classify = className.split('_')[-1]
-
-            # for item in json_info['shapes']:
-            #     if item['shape_type'] == 'rectangle' and 'mouth_' not in item['label']:
-            #         className = item['label']
-            #         # filter the box for image classification
-            #         # is_get_image_classify_gt = False
-            #         boxXYXY = item['points']
-            #         className_to_boxXYXY[className] = boxXYXY
-                        # elif className[-1].isdigit():
-                        #     className_for_image_classify = className[-1]
-                        #     is_get_image_classify_gt = True
-                    # if 'mouth_' in className and not is_get_image_classify_gt:
-                    #     if '_' in className:
-                    #         className_for_image_classify = className.split('_')[-1]
-                    #         is_get_image_classify_gt = True
-                    #     # elif className[-1].isdigit():
-                    #     #     className_for_image_classify = className[-1]
-                    #     #     is_get_image_classify_gt = True
-
+        
         assert className_for_image_classify != -1
-        return className_to_boxXYXY, className_for_image_classify
+        
+        # modify the self.box_mask_pairs_dict (e.g., recover the human-labeled box rather than the nearly bounding box of mask)
+        box_mask_pairs_dict_return = {}
+        key_for_box_mask_pairs_dict = self.video_json_root.split('/')[-1] + '/' + str(frame_id).zfill(3)
+        if key_for_box_mask_pairs_dict in self.box_mask_pairs_dict.keys():
+            for k, v in self.box_mask_pairs_dict[key_for_box_mask_pairs_dict].items():
+                new_box_coors_xyxy = className_to_boxXYXY[k]
+                new_box_coors_xyxy = [item for sublist in new_box_coors_xyxy for item in sublist]
+                old_box_coors_xywh, mask = v
+                
+                box_mask_pairs_dict_return[k] = (new_box_coors_xyxy, mask)
+        return className_to_boxXYXY, className_for_image_classify, box_mask_pairs_dict_return
+
 
     def __len__(self):
         return

@@ -15,6 +15,7 @@ from sam2.modeling.sam2_utils import (
     get_1d_sine_pe,
     get_next_point,
     sample_box_points,
+    sample_batched_one_box_points,
     select_closest_cond_frames,
 )
 
@@ -36,6 +37,8 @@ class SAM2Train(SAM2Base):
         box_decoder=None, # add by bryce
         image_classify_decoder=None, # add by bryce
         is_class_agnostic=True, # add by bryce
+        use_one_box_per_prompt=True, # add by bryce
+        flag_is_filter_bad_images=False, # add by bryce
         num_frames=-1, # add by bryce
         num_frames_with_invalid=-1, # add by bryce
         num_multimask_outputs=3, # add by bryce
@@ -123,6 +126,8 @@ class SAM2Train(SAM2Base):
         self.num_multimask_outputs = num_multimask_outputs
         self.threshold_for_boxes = threshold_for_boxes
         self.threshold_for_masks = threshold_for_masks
+        self.use_one_box_per_prompt = use_one_box_per_prompt
+        self.flag_is_filter_bad_images = flag_is_filter_bad_images
         self._build_sam_heads(is_class_agnostic=is_class_agnostic, num_multimask_outputs=num_multimask_outputs)
         self.Boxes_Decoder_PostProcess = PostProcess()
         # end
@@ -138,18 +143,21 @@ class SAM2Train(SAM2Base):
         # add by bryce; for image classification
         pred_image_classifiy_logits = self._forward_image_classify_decoder(backbone_out)
         backbone_out['image_classifiy_decoder_pred_logits'] = pred_image_classifiy_logits
-
+        
         # add by bryce; filter the bad images for subsequent training procedure
         # indices_to_remove = [i for i, value in enumerate(input.image_classify) if value == 6]
         if phase == 'train':
             indices_to_reserve = [i for i, value in enumerate(input.image_classify) if value != 6]
             pred_image_classify_processed = None
         elif phase == 'val':
-            pred_image_classifiy = pred_image_classifiy_logits.argmax(dim=1).tolist()
-            pred_image_classify_scores = torch.nn.functional.softmax(pred_image_classifiy_logits, dim=-1)
-            # indices post-processing
-            pred_image_classify_processed, indices_to_reserve= self._post_processing_reserved_indices(pred_image_classify_scores, self.num_frames, self.num_frames_with_invalid)
-
+            if self.flag_is_filter_bad_images:
+                pred_image_classifiy = pred_image_classifiy_logits.argmax(dim=1).tolist()
+                pred_image_classify_scores = torch.nn.functional.softmax(pred_image_classifiy_logits, dim=-1)
+                # indices post-processing
+                pred_image_classify_processed, indices_to_reserve= self._post_processing_reserved_indices(pred_image_classify_scores, self.num_frames, self.num_frames_with_invalid)
+            else:
+                indices_to_reserve = [i for i, value in enumerate(input.image_classify) if value != 6]
+                pred_image_classify_processed = None
         assert len(indices_to_reserve) == 6
         backbone_out['vision_features'] = backbone_out['vision_features'][indices_to_reserve]
 
@@ -169,12 +177,12 @@ class SAM2Train(SAM2Base):
         # end
 
         # backbone_out = self.prepare_prompt_inputs(backbone_out, input)
-        
+
         backbone_out = self.prepare_prompt_inputs_box(backbone_out, input, indices_to_reserve, phase=phase, threshold=self.threshold_for_boxes)
 
-        previous_stages_out = self.forward_tracking(backbone_out, input)
+        previous_stages_out, valid_box_mask_pairs = self.forward_tracking(backbone_out, input)
 
-        return previous_stages_out, backbone_out, output_for_two_stage, pred_image_classifiy_logits, pred_image_classify_processed, indices_to_reserve
+        return previous_stages_out, backbone_out, output_for_two_stage, pred_image_classifiy_logits, pred_image_classify_processed, indices_to_reserve, valid_box_mask_pairs
 
 
     def _prepare_backbone_features_per_frame(self, img_batch, img_ids):
@@ -343,12 +351,14 @@ class SAM2Train(SAM2Base):
         # }
         
         valid_mask = input.masks[indices_to_reserve] # add by bryce
+        
         gt_masks_per_frame = {
             stage_id: masks.unsqueeze(1)  # [B, 1, H_im, W_im] 
             for stage_id, masks in enumerate(valid_mask) # changed by bryce
         }
         if phase == 'train':
             gt_boxes_per_frame = [input.boxes[indx] for indx in indices_to_reserve] # add by bryce; list[{'labels': tensor([ids; num_boxes]), 'boxes': tensor([(absolute xyxy (num_boxes, 4))])}, ]
+            valid_box_mask_pairs = [input.box_mask_pairs[ids] for ids in indices_to_reserve]
         elif phase == 'val':
             box_decoder_pred = {'pred_logits': backbone_out['box_decoder_pred_cls'][-1],
                                 'pred_boxes': backbone_out['box_decoder_pred_boxes'][-1]}
@@ -357,6 +367,7 @@ class SAM2Train(SAM2Base):
             results = self.Boxes_Decoder_PostProcess(box_decoder_pred, target_sizes=target_sizes, not_to_xyxy=False, test=False)
 
             gt_boxes_per_frame = []
+            valid_box_mask_pairs = []
             for pred_boxed_info in results:
                 scores = pred_boxed_info['scores']
                 labels = pred_boxed_info['labels']
@@ -365,10 +376,31 @@ class SAM2Train(SAM2Base):
                 pred_dict = {
                     'boxes': boxes[select_mask],
                     'size': target_sizes,
-                    'box_label': labels[select_mask]
+                    'box_label': labels[select_mask],
+                    'score': scores[select_mask]
                 }
                 gt_boxes_per_frame.append({'labels':pred_dict['box_label'], 'boxes': pred_dict['boxes']})
-            
+
+                # for box-mask-pairs
+                pred_clsID_box_pair_per_frame = {}
+                unique_classes = torch.unique(pred_dict['box_label'])
+                for cls in unique_classes:
+                    # 创建类别掩码，筛选当前类别的数据
+                    cls_mask = (pred_dict['box_label'] == cls)
+                    # 获取当前类别的得分和边界框
+                    cls_scores = pred_dict['score'][cls_mask]
+                    cls_boxes = pred_dict['boxes'][cls_mask]
+
+                    # 如果当前类别没有有效数据则跳过
+                    if len(cls_scores) == 0:
+                        continue
+                    # 找到当前类别的最高得分索引
+                    max_score_idx = torch.argmax(cls_scores)
+                    # 存储结果
+                    pred_clsID_box_pair_per_frame[cls.item()] = (cls_boxes[max_score_idx].cpu().numpy().tolist(), cls_scores[max_score_idx].item())
+                # for ids in range(pred_dict['box_label'].shape[0]):
+                #     pred_clsID_box_pair_per_frame[pred_dict['box_label'][ids].item()] = (pred_dict['boxes'][ids].cpu().numpy().tolist(), None)
+                valid_box_mask_pairs.append(pred_clsID_box_pair_per_frame)
 
         # gt_masks_per_frame = input.masks.unsqueeze(2) # [T,B,1,H_im,W_im] keep everything in tensor form
         backbone_out["gt_masks_per_frame"] = gt_masks_per_frame
@@ -433,17 +465,28 @@ class SAM2Train(SAM2Base):
         # Prepare mask or point inputs on initial conditioning frames
         backbone_out["mask_inputs_per_frame"] = {}  # {frame_idx: <input_masks>}
         backbone_out["point_inputs_per_frame"] = {}  # {frame_idx: <input_points>}
+        backbone_out["valid_box_mask_pairs"] = {}  # {frame_idx: <input_points>}
+
         for t in init_cond_frames:
             if not use_pt_input:
                 backbone_out["mask_inputs_per_frame"][t] = gt_masks_per_frame[t]
             else:
                 # During training # P(box) = prob_to_use_pt_input * prob_to_use_box_input
                 use_box_input = self.rng.random() < prob_to_use_box_input
-                if use_box_input:
+                if use_box_input and not self.use_one_box_per_prompt:
                     # changes by bryce
                     is_provide_box = gt_boxes_per_frame[t] is not None
                     points, labels = sample_box_points(
-                        gt_masks_per_frame[t], is_provide_box=is_provide_box, boxes=gt_boxes_per_frame[t]
+                        gt_masks_per_frame[t], 
+                        is_provide_box=is_provide_box, 
+                        boxes=gt_boxes_per_frame[t]
+                    )
+                elif use_box_input and self.use_one_box_per_prompt: # add by bryce
+                    is_provide_box = len(valid_box_mask_pairs[t]) > 0
+                    points, labels = sample_batched_one_box_points(
+                        gt_masks_per_frame[t],
+                        is_provide_box=is_provide_box, 
+                        boxes=valid_box_mask_pairs[t] # add by bryce
                     )
                 else:
                     # (here we only sample **one initial point** on initial conditioning frames from the
@@ -455,9 +498,10 @@ class SAM2Train(SAM2Base):
                             "uniform" if self.training else self.pt_sampling_for_eval
                         ),
                     )
-
+                # points: Size(1, 12, 2); labels: Size(1, 12)
                 point_inputs = {"point_coords": points, "point_labels": labels}
                 backbone_out["point_inputs_per_frame"][t] = point_inputs
+                backbone_out["valid_box_mask_pairs"][t] = valid_box_mask_pairs[t] # add by bryce
 
         # Sample frames where we will add correction clicks on the fly
         # based on the error between prediction and ground-truth masks
@@ -564,7 +608,7 @@ class SAM2Train(SAM2Base):
             {k: v for k, v in d.items() if k != "obj_ptr"} for d in all_frame_outputs
         ]
 
-        return all_frame_outputs
+        return all_frame_outputs, backbone_out['valid_box_mask_pairs']
 
     def track_step(
         self,

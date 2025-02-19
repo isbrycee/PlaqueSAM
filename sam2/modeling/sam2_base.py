@@ -312,7 +312,8 @@ class SAM2Base(torch.nn.Module):
         - obj_ptr: [B, C] shape, the object pointer vector for the output mask, extracted
           based on the output token from the SAM mask decoder.
         """
-        B = backbone_features.size(0)
+        # B = backbone_features.size(0) # changed by bryce; !!! note here !!!
+        B = point_inputs["point_coords"].size(0)
         device = backbone_features.device
         assert backbone_features.size(1) == self.sam_prompt_embed_dim
         assert backbone_features.size(2) == self.sam_image_embedding_size
@@ -322,7 +323,7 @@ class SAM2Base(torch.nn.Module):
         if point_inputs is not None:
             sam_point_coords = point_inputs["point_coords"]
             sam_point_labels = point_inputs["point_labels"]
-            assert sam_point_coords.size(0) == B and sam_point_labels.size(0) == B
+            assert sam_point_coords.size(0) == B and sam_point_labels.size(0) == B # changed by bryce; !!! note here !!!
         else:
             # If no points are provide, pad with an empty point (with label -1)
             sam_point_coords = torch.zeros(B, 1, 2, device=device)
@@ -364,7 +365,7 @@ class SAM2Base(torch.nn.Module):
             sparse_prompt_embeddings=sparse_embeddings,
             dense_prompt_embeddings=dense_embeddings,
             multimask_output=multimask_output,
-            repeat_image=False,  # the image is already batched
+            repeat_image=True,  # the image is already batched; changed by bryce, repeat_image for per prompt (single box)
             high_res_features=high_res_features,
         )
         if self.pred_obj_scores:
@@ -393,8 +394,8 @@ class SAM2Base(torch.nn.Module):
             # take the best mask prediction (with the highest IoU estimation)
             best_iou_inds = torch.argmax(ious, dim=-1)
             batch_inds = torch.arange(B, device=device)
-            low_res_masks = low_res_multimasks[batch_inds, best_iou_inds].unsqueeze(1)
-            high_res_masks = high_res_multimasks[batch_inds, best_iou_inds].unsqueeze(1)
+            low_res_masks = low_res_multimasks[batch_inds, best_iou_inds].unsqueeze(1) # unuseful; add by bryce; we use the multimask, rather than single mask
+            high_res_masks = high_res_multimasks[batch_inds, best_iou_inds].unsqueeze(1) # unuseful; add by bryce; we use the multimask, rather than single mask
             if sam_output_tokens.size(1) > 1:
                 sam_output_token = sam_output_tokens[batch_inds, best_iou_inds]
         else:

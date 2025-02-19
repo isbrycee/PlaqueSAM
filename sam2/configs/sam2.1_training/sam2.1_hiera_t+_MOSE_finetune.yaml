@@ -3,27 +3,30 @@
 scratch:
   resolution: 1024
   train_batch_size: 1
-  num_train_workers: 16
+  num_train_workers: 16 # 16
   num_frames: 6
   num_frames_with_invalid: 8
   num_multimask_outputs: 3
   max_num_objects: 4
-  base_lr: 5.0e-5 # 5.0e-6
-  vision_lr: 3.0e-05 # 3.0e-06
+  base_lr: 1.0e-4 # 5.0e-6
+  vision_lr: 5.0e-05 # 3.0e-06
   phases_per_epoch: 1
   num_epochs: 100
+  dataset_root_path: /home/jinghao/projects/dental_plague_detection/dataset/ # temp_debug/
 dataset_train:
   # PATHS to Dataset
-  img_folder: /home/jinghao/projects/dental_plague_detection/dataset/train/JPEGImages/
-  gt_folder: /home/jinghao/projects/dental_plague_detection/dataset/train/Annotations/ # PATH to MOSE Annotations folder
-  gt_box_folder: /home/jinghao/projects/dental_plague_detection/dataset/train/Json/
+  img_folder: ${scratch.dataset_root_path}/train/JPEGImages/
+  gt_folder: ${scratch.dataset_root_path}/train/Annotations/ # PATH to MOSE Annotations folder
+  gt_box_folder: ${scratch.dataset_root_path}/train/Json/
+  gt_ins_seg_json: ${scratch.dataset_root_path}/train/train_ins.json
   file_list_txt: # training/assets/MOSE_sample_train_list.txt # Optional PATH to filelist containing a subset of videos to be used for training
   multiplier: 1 # changed by bryce from 2
 dataset_test:
   # PATHS to Dataset
-  img_folder: /home/jinghao/projects/dental_plague_detection/dataset/test/JPEGImages/ 
-  gt_folder: /home/jinghao/projects/dental_plague_detection/dataset/test/Annotations/  # PATH to MOSE Annotations folder
-  gt_box_folder: /home/jinghao/projects/dental_plague_detection/dataset/test/Json/ 
+  img_folder: ${scratch.dataset_root_path}/test/JPEGImages/ 
+  gt_folder: ${scratch.dataset_root_path}/test/Annotations/  # PATH to MOSE Annotations folder
+  gt_box_folder: ${scratch.dataset_root_path}/test/Json/
+  gt_ins_seg_json: ${scratch.dataset_root_path}/test/test_ins.json
   file_list_txt: # training/assets/MOSE_sample_train_list.txt # Optional PATH to filelist containing a subset of videos to be used for training
   multiplier: 1
 
@@ -185,6 +188,8 @@ trainer:
     #       num_layers: 2
 
     is_class_agnostic: False # add by bryce
+    use_one_box_per_prompt: True # add by bryce
+    flag_is_filter_bad_images: False # add by bryce
     num_classes_for_mask: 3 # ${scratch.max_num_objects} # add by bryce
     num_frames: ${scratch.num_frames}
     num_frames_with_invalid: ${scratch.num_frames_with_invalid}
@@ -266,6 +271,7 @@ trainer:
                 img_folder: ${dataset_train.img_folder}
                 gt_folder: ${dataset_train.gt_folder}
                 gt_box_folder: ${dataset_train.gt_box_folder}
+                gt_ins_seg_json: ${dataset_train.gt_ins_seg_json}
                 file_list_txt: ${dataset_train.file_list_txt}
               sampler:
                 _target_: training.dataset.vos_sampler.RandomUniformSampler
@@ -301,6 +307,7 @@ trainer:
                 img_folder: ${dataset_test.img_folder}
                 gt_folder: ${dataset_test.gt_folder}
                 gt_box_folder: ${dataset_test.gt_box_folder}
+                gt_ins_seg_json: ${dataset_test.gt_ins_seg_json}
                 file_list_txt: ${dataset_test.file_list_txt}
               sampler:
                 _target_: training.dataset.vos_sampler.RandomUniformSampler
@@ -433,6 +440,7 @@ trainer:
       flush_secs: 120
       should_log: True
     log_dir: ${launcher.experiment_log_dir}/logs
+    saved_jsons_dir: ${launcher.experiment_log_dir}/saved_jsons
     log_freq: 10
 
   # initialize from a SAM 2 checkpoint
@@ -454,7 +462,7 @@ trainer:
 launcher:
   num_nodes: 1
   gpus_per_node: 1
-  experiment_log_dir: logs_lr5e-5_bblr5e-5_4scales_twostage_class_weights_wd_512_100e_tiny # Path to log directory, defaults to ./sam2_logs/${config_name}
+  experiment_log_dir: logs_lr1e-4_bblr5e-5_4scales_twostage_class_weights_wd_1024_100e_tiny # Path to log directory, defaults to ./sam2_logs/${config_name}
 
 # SLURM args if running on a cluster
 submitit:
