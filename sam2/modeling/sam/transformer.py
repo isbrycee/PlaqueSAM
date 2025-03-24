@@ -118,6 +118,8 @@ class TwoWayTransformer(nn.Module):
         queries = point_embedding
         keys = image_embedding
 
+        aux_queries_list = []
+        aux_keys_list = []
         # Apply transformer blocks and final layernorm
         for layer in self.layers:
             queries, keys = layer(
@@ -126,6 +128,8 @@ class TwoWayTransformer(nn.Module):
                 query_pe=point_embedding,
                 key_pe=image_pe,
             )
+            aux_queries_list.append(queries)
+            aux_keys_list.append(keys)
 
         # Apply the final attention layer from the points to the image
         q = queries + point_embedding
@@ -134,7 +138,7 @@ class TwoWayTransformer(nn.Module):
         queries = queries + attn_out
         queries = self.norm_final_attn(queries)
 
-        return queries, keys
+        return queries, keys, aux_queries_list, aux_keys_list
 
 
 class TwoWayAttentionBlock(nn.Module):

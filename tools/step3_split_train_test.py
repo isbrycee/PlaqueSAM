@@ -3,13 +3,13 @@ import shutil
 import random
 
 # 定义数据的根目录
-base_dir = "/home/jinghao/projects/dental_plague_detection/dataset/all"
+base_dir = '/home/jinghao/projects/dental_plague_detection/dataset/2025_revised_for_training_all_bak/'
 annotations_dir = os.path.join(base_dir, "Annotations")
 images_dir = os.path.join(base_dir, "JPEGImages")
 json_dir = os.path.join(base_dir, "Json")
 
 # 定义输出路径
-output_dir = "/home/jinghao/projects/dental_plague_detection/dataset/split"
+output_dir = "/home/jinghao/projects/dental_plague_detection/dataset/2025_revised_for_training_split/"
 train_dir = os.path.join(output_dir, "train")
 test_dir = os.path.join(output_dir, "test")
 

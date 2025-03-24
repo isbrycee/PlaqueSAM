@@ -18,6 +18,8 @@ import random
 from torchvision.ops.boxes import nms
 from ..ops.modules import MSDeformAttn
 
+from .template_encoder import TemplateFeatureExtractor
+
 class BoxDecoder(nn.Module):
     def __init__(
         self,
@@ -41,7 +43,7 @@ class BoxDecoder(nn.Module):
         modulate_hw_attn=True,
         deformable_decoder=True,
         is_use_prior_loc_templates=False,
-        prior_loc_templates_npy_input_path=None
+        # prior_loc_templates_npy_input_path=None
     ):
         super().__init__()
         self.input_dim = input_dim
@@ -107,7 +109,7 @@ class BoxDecoder(nn.Module):
 
         self.decoder.bbox_embed = self.bbox_embed
         self.decoder.class_embed = self.class_embed
-        self.prior_loc_templates_npy_input_path = prior_loc_templates_npy_input_path
+        # self.prior_loc_templates_npy_input_path = prior_loc_templates_npy_input_path
         self.is_use_prior_loc_templates = is_use_prior_loc_templates
 
         # for teo-stage
@@ -121,7 +123,7 @@ class BoxDecoder(nn.Module):
         # for generate 4 scale fests similarly in DINO
         self.fpn_channel_proj_32 = nn.Sequential(
             nn.Conv2d(
-                32,
+                256,
                 hidden_dim,
                 kernel_size=1,
                 bias=False,
@@ -139,7 +141,7 @@ class BoxDecoder(nn.Module):
 
         self.fpn_channel_proj_64 = nn.Sequential(
             nn.Conv2d(
-                64,
+                256,
                 hidden_dim,
                 kernel_size=1,
                 bias=False,
@@ -200,15 +202,28 @@ class BoxDecoder(nn.Module):
         ])
 
 
-        if self.is_use_prior_loc_templates and self.prior_loc_templates_npy_input_path and len(os.listdir(self.prior_loc_templates_npy_input_path)) == 6:
-            prior_loc_feas_list = []
-            for prior_loc_item in os.listdir(self.prior_loc_templates_npy_input_path):
-                prior_loc_feas_path = os.path.join(self.prior_loc_templates_npy_input_path, prior_loc_item)
-                prior_loc_feas = np.load(prior_loc_feas_path)['arr_0'] # (256, 3200)
-                prior_loc_feas_list.append(torch.from_numpy(prior_loc_feas).permute(1,0).contiguous())
-            self.prior_loc_feas = torch.stack(prior_loc_feas_list, dim=0)
-        else:
-            self.prior_loc_feas = None
+        # if self.is_use_prior_loc_templates and self.prior_loc_templates_npy_input_path and len(os.listdir(self.prior_loc_templates_npy_input_path)) == 6:
+        #     prior_loc_feas_list = []
+        #     for prior_loc_item in os.listdir(self.prior_loc_templates_npy_input_path):
+        #         prior_loc_feas_path = os.path.join(self.prior_loc_templates_npy_input_path, prior_loc_item)
+        #         prior_loc_feas = np.load(prior_loc_feas_path)['arr_0'] # (256, 3200)
+        #         prior_loc_feas_list.append(torch.from_numpy(prior_loc_feas).permute(1,0).contiguous())
+        #     self.prior_loc_feas = torch.stack(prior_loc_feas_list, dim=0)
+        # else:
+        #     self.prior_loc_feas = None
+
+        # if self.is_use_prior_loc_templates and self.prior_loc_templates_npy_input_path and len(os.listdir(self.prior_loc_templates_npy_input_path)) == 6:
+        #     # prior_loc_feas_list = []
+        #     self.TemplateFeatureExtractor = TemplateFeatureExtractor(self.prior_loc_templates_npy_input_path)
+        #     # for prior_loc_item in os.listdir(self.prior_loc_templates_npy_input_path):
+        #     #     prior_loc_feas_path = os.path.join(self.prior_loc_templates_npy_input_path, prior_loc_item)
+        #     #     prior_loc_feas = np.load(prior_loc_feas_path)['arr_0'] # (256, 3200)
+        #     #     prior_loc_feas_list.append(torch.from_numpy(prior_loc_feas).permute(1,0).contiguous())
+        #     # self.prior_loc_feas = torch.stack(prior_loc_feas_list, dim=0)
+        # else:
+        #     self.TemplateFeatureExtractor = None
+        
+        
 
     def init_ref_points(self, use_num_queries):
         self.refpoint_embed = nn.Embedding(use_num_queries, self.query_dim)
@@ -369,7 +384,8 @@ class BoxDecoder(nn.Module):
                 spatial_shapes=spatial_shapes,
                 valid_ratios=valid_ratios,
                 tgt_mask=None, # torch.ones((self.num_queries, self.num_queries)).to(device),
-                adapted_prior_loc_feas=self.prior_loc_feas)
+                prior_loc_template_memory=backbone_out['prior_loc_template_memory'],
+                prior_loc_template_order_id_in_img_batch=backbone_out['template_order_id_in_img_batch'])
         
         outputs_coord_list = []
         for dec_lid, (layer_ref_sig, layer_bbox_embed, layer_hs) in enumerate(zip(references[:-1], self.bbox_embed, hs)):
@@ -468,7 +484,8 @@ class TransformerDecoder(nn.Module):
                 level_start_index: Optional[Tensor] = None, # num_levels
                 spatial_shapes: Optional[Tensor] = None, # bs, num_levels, 2
                 valid_ratios: Optional[Tensor] = None,
-                adapted_prior_loc_feas: Optional[Tensor] = None,
+                prior_loc_template_memory: Optional[Tensor] = None,
+                prior_loc_template_order_id_in_img_batch: List = None,
                 ):
         """
         Input:
@@ -500,7 +517,7 @@ class TransformerDecoder(nn.Module):
             else:
                 query_sine_embed = gen_sineembed_for_position(reference_points) # nq, bs, 256*2
                 reference_points_input = None
-
+            
             # conditional query
             raw_query_pos = self.ref_point_head(query_sine_embed) # nq, bs, 256
             pos_scale = self.query_scale(output) if self.query_scale is not None else 1
@@ -537,7 +554,8 @@ class TransformerDecoder(nn.Module):
                     self_attn_mask = tgt_mask,
                     cross_attn_mask = memory_mask,
 
-                    adapted_prior_loc_feas = adapted_prior_loc_feas
+                    prior_loc_template_memory = prior_loc_template_memory,
+                    prior_loc_template_order_id_in_img_batch = prior_loc_template_order_id_in_img_batch
                 )
 
             # iter update
@@ -596,7 +614,6 @@ class DeformableTransformerDecoderLayer(nn.Module):
             self.cross_attn = nn.MultiheadAttention(d_model, n_heads)
         else:
             self.cross_attn = MSDeformAttn(d_model, n_levels, n_heads, n_points) # changed by bryce; note change back !!!
-            # self.cross_attn = nn.MultiheadAttention(d_model, n_heads)
         self.dropout1 = nn.Dropout(dropout)
         self.norm1 = nn.LayerNorm(d_model)
         
@@ -627,13 +644,13 @@ class DeformableTransformerDecoderLayer(nn.Module):
         if self.is_use_prior_loc_templates:
             if use_deformable_box_attn: # changed by bryce; note change back !!!
                 # self.cross_attn = MSDeformableBoxAttention(d_model, n_levels, n_heads, n_boxes=n_points, used_func=box_attn_type)
-                self.prior_loc_cross_attn = nn.MultiheadAttention(d_model, n_heads)
-            else:
-                self.cross_attn = MSDeformAttn(d_model, n_levels, n_heads, n_points) # changed by bryce; note change back !!!
                 # self.prior_loc_cross_attn = nn.MultiheadAttention(d_model, n_heads)
+                self.prior_loc_cross_attn = nn.Identity() 
+            else:
+                self.prior_loc_cross_attn = MSDeformAttn(d_model, n_levels, n_heads, n_points)
             self.dropout4 = nn.Dropout(dropout)
             self.norm4 = nn.LayerNorm(d_model)
-            self.prior_loc_adapter = MLP(d_model, d_model, d_model, 3)
+            self.prior_loc_adapter = MLP(32, 64, d_model, 3)
 
 
     def rm_self_attn_modules(self):
@@ -745,7 +762,6 @@ class DeformableTransformerDecoderLayer(nn.Module):
                 # for tgt
                 tgt: Optional[Tensor],  # nq, bs, d_model
                 tgt_query_pos: Optional[Tensor] = None, # pos for query. MLP(Sine(pos))
-                adapted_prior_loc_feas: Optional[Tensor] = None,
                 tgt_query_sine_embed: Optional[Tensor] = None, # pos for query. Sine(pos)
                 tgt_key_padding_mask: Optional[Tensor] = None,
                 tgt_reference_points: Optional[Tensor] = None, # nq, bs, 4
@@ -755,7 +771,7 @@ class DeformableTransformerDecoderLayer(nn.Module):
                 memory_key_padding_mask: Optional[Tensor] = None,
                 memory_level_start_index: Optional[Tensor] = None, # num_levels
                 memory_spatial_shapes: Optional[Tensor] = None, # bs, num_levels, 2
-                memory_pos: Optional[Tensor] = None, # pos for memory
+                prior_loc_template_order_id_in_img_batch: List = None,
 
                 # sa
                 self_attn_mask: Optional[Tensor] = None, # mask used for self-attention
@@ -775,12 +791,21 @@ class DeformableTransformerDecoderLayer(nn.Module):
                 raise NotImplementedError("Unknown key_aware_type: {}".format(self.key_aware_type))
         
         device = tgt.device
-        memory = self.prior_loc_adapter(memory.to(device)).permute(1,0,2).contiguous()
+
+        sorted_memory = [memory[i] for i in prior_loc_template_order_id_in_img_batch]
+        sorted_memory = torch.stack(sorted_memory, dim=0)
+        B, C, H, W = sorted_memory.shape
+        sorted_memory = sorted_memory.view(B, -1, C)
+
+        sorted_memory = self.prior_loc_adapter(sorted_memory.to(device)).contiguous() # .permute(1,0,2)
         # change by bryce; note change back !!!
         # tgt2, tgt2_attn_weights  = self.prior_loc_cross_attn(self.with_pos_embed(tgt, tgt_query_pos), memory, memory)
-        tgt2 = self.cross_attn(self.with_pos_embed(tgt, tgt_query_pos).transpose(0, 1).contiguous(),
+        tgt2 = self.prior_loc_cross_attn(self.with_pos_embed(tgt, tgt_query_pos).transpose(0, 1).contiguous(),
                                tgt_reference_points.transpose(0, 1).contiguous(),
-                               memory, memory_spatial_shapes, memory_level_start_index, memory_key_padding_mask).transpose(0, 1).contiguous()
+                               sorted_memory, 
+                               memory_spatial_shapes, 
+                               memory_level_start_index, 
+                               memory_key_padding_mask).transpose(0, 1).contiguous()
         tgt = tgt + self.dropout4(tgt2)
         tgt = self.norm4(tgt)
 
@@ -806,7 +831,8 @@ class DeformableTransformerDecoderLayer(nn.Module):
                 cross_attn_mask: Optional[Tensor] = None, # mask used for cross-attention
 
                 # for prior loc feas
-                adapted_prior_loc_feas: Optional[Tensor] = None,
+                prior_loc_template_memory: Optional[Tensor] = None,
+                prior_loc_template_order_id_in_img_batch: List = None,
             ):
 
         for funcname in self.module_seq:
@@ -824,12 +850,14 @@ class DeformableTransformerDecoderLayer(nn.Module):
                             memory_spatial_shapes, memory_pos, self_attn_mask, cross_attn_mask)
             elif funcname == 'plca':
                 # continue
+                template_features, template_memory_spatial_shapes, template_memory_level_start_index, template_memory_key_padding_mask = prior_loc_template_memory
+
                 tgt = self.forward_plca(tgt, tgt_query_pos, \
-                        adapted_prior_loc_feas, 
                         tgt_query_sine_embed, \
                         tgt_key_padding_mask, tgt_reference_points, \
-                        memory, memory_key_padding_mask, memory_level_start_index, \
-                        memory_spatial_shapes, memory_pos, self_attn_mask, cross_attn_mask
+                        template_features, template_memory_key_padding_mask, template_memory_level_start_index, \
+                        template_memory_spatial_shapes, prior_loc_template_order_id_in_img_batch, 
+                        self_attn_mask, cross_attn_mask
                         )
             else:
                 raise ValueError('unknown funcname {}'.format(funcname))

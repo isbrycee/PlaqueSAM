@@ -13,7 +13,10 @@ from pycocotools import mask as mask_utils
 from skimage.measure import find_contours
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
-
+from PIL import Image
+import random
+from pycocotools.cocoeval import maskUtils
+from torchvision.transforms import InterpolationMode
 
 # 全局颜色映射字典
 label_to_color = {}
@@ -228,6 +231,7 @@ class InstanceSegmentationMetric:
         
         # for item in all_instance_preds:
         #     visualize_and_save_masks_for_instance(item, save_path=f'/home/jinghao/projects/dental_plague_detection/ins_gt_vis/all_masks_gt_{time.strftime("%Y-%m-%d-%H_%M_%S", time.localtime(time.time()))}.png')
+        
         self.mean_ap_metric.update(all_instance_preds, all_instance_targets)
         # 释放不再需要的变量
         del pred_masks, target_masks, all_instance_preds, all_instance_targets
@@ -259,7 +263,7 @@ class Postprocessor_for_Instance_Segmentation:
     支持在循环中累加样本，最终计算整个数据集的指标。
     """
 
-    def __init__(self, gt_json_path, num_mask_classes, saved_jsons_dir, device="cpu"):
+    def __init__(self, gt_json_path, num_mask_classes, saved_jsons_dir, val_ins_seg_class_agnostic, device="cpu"):
         """
         初始化指标计算器。
 
@@ -271,6 +275,7 @@ class Postprocessor_for_Instance_Segmentation:
         self.num_mask_classes = num_mask_classes
         self.gt_json_path = gt_json_path
         self.saved_jsons_dir = saved_jsons_dir
+        self.val_ins_seg_class_agnostic = val_ins_seg_class_agnostic
 
         with open(gt_json_path, "r") as f:
             coco_data = json.load(f)
@@ -281,7 +286,7 @@ class Postprocessor_for_Instance_Segmentation:
 
     def _extract_filename_to_image_id_mapping(self, coco_data):
         # 初始化映射字典
-        filename_to_image_id = {}
+        filename_to_image_id_dict = {}
         
         # 遍历 images 部分
         for image_info in coco_data["images"]:
@@ -289,12 +294,57 @@ class Postprocessor_for_Instance_Segmentation:
             image_id = image_info["id"]
             width = image_info["width"]
             height = image_info["height"]
-            filename_to_image_id[file_name] = (image_id, (width, height))
+            filename_to_image_id_dict[file_name] = (image_id, (width, height))
         
-        return filename_to_image_id
+        return filename_to_image_id_dict
     
 
-    def update(self, indices_to_reserve, outputs, valid_box_mask_pairs, video_name):
+    # def update(self, indices_to_reserve, outputs, valid_box_mask_pairs, img_batch, video_name, is_visualized=False):
+
+    #     for t_frame, pred_boxes in valid_box_mask_pairs.items():
+    #         img_file_name = video_name + '/' + str(indices_to_reserve[t_frame]+1).zfill(3) + '.jpg'
+    #         # filter those images that are classfied wrong
+    #         if img_file_name in self.filename_to_image_id.keys():
+    #             img_id, (width, height) = self.filename_to_image_id[img_file_name]
+    #         else:
+    #             print("bad ", img_file_name)
+    #             continue
+    #         for ids, (pred_cls, (pred_box, pred_score)) in enumerate(pred_boxes.items()):
+
+    #             all_pred_masks = outputs[t_frame]['multistep_pred_multimasks_high_res']
+
+    #             for pred_masks in all_pred_masks:
+    #                 pred_mask = pred_masks[ids]
+
+    #                 pred_mask = torch.argmax(pred_mask, dim=0)
+    #                 pred_mask = pred_mask.unsqueeze(0)
+                    
+    #                 foreground_masks = {}
+    #                 for cls in range(1, self.num_mask_classes + 1):
+    #                     cls_mask = (pred_mask == cls).long()
+    #                     if cls_mask.sum().item() > 0:
+    #                         foreground_masks[cls] = cls_mask.squeeze(0)
+
+    #                 for mask_id, mask_per_cls in foreground_masks.items():
+    #                     mask_id_map = {1: 2, 2: 1, 3: 3}
+
+    #                     category_id = pred_cls * self.num_mask_classes + (mask_id_map[mask_id] - 1)
+    #                     resized_mask = F.resize(mask_per_cls[None, None], (height, width)).squeeze().contiguous().cpu().numpy().astype(np.uint8)
+    #                     # resized_mask = self.binary_mask_to_polygon(resized_mask)
+    #                     resized_mask_rle = mask_utils.encode(np.asfortranarray(resized_mask))
+    #                     resized_mask_rle["counts"] = resized_mask_rle["counts"].decode("utf-8")
+
+    #                     pred_ins = {
+    #                                 "image_id": img_id,
+    #                                 "category_id": category_id,
+    #                                 "score": pred_score,
+    #                                 # "bbox": mask_utils.toBbox(resized_mask_rle).tolist(),  # 从 RLE 生成检测框, # error box coors
+    #                                 "segmentation": resized_mask_rle,
+    #                             }
+    #                     self.pred_ins.append(pred_ins)
+
+
+    def update(self, indices_to_reserve, outputs, valid_box_mask_pairs, img_batch, video_name, is_visualized=False):
 
         for t_frame, pred_boxes in valid_box_mask_pairs.items():
             img_file_name = video_name + '/' + str(indices_to_reserve[t_frame]+1).zfill(3) + '.jpg'
@@ -302,19 +352,31 @@ class Postprocessor_for_Instance_Segmentation:
             if img_file_name in self.filename_to_image_id.keys():
                 img_id, (width, height) = self.filename_to_image_id[img_file_name]
             else:
+                print("bad ", img_file_name)
                 continue
             for ids, (pred_cls, (pred_box, pred_score)) in enumerate(pred_boxes.items()):
 
                 all_pred_masks = outputs[t_frame]['multistep_pred_multimasks_high_res']
+                # all_pred_masks = [outputs[t_frame]['multistep_aux_pred_multimasks'][-1]]
                 for pred_masks in all_pred_masks:
-                    pred_mask = pred_masks[ids]
+                    
+                    # pred_masks = torch.nn.functional.interpolate(
+                    #     pred_masks.float(),
+                    #     size=(1024, 1024),
+                    #     mode="nearest",
+                    # )
 
-                    pred_mask = torch.argmax(pred_mask, dim=0)
-                    pred_mask = pred_mask.unsqueeze(0)
+                    # pred_mask = pred_masks[ids].sigmoid()[:-1] # get first three masks
+                    pred_mask = pred_masks[ids] # get first three masks
+                    pred_mask = (pred_mask > 0).int()
+
+                    # pred_mask = torch.argmax(pred_mask, dim=0)
+                    # pred_mask = pred_mask.unsqueeze(0)
                     
                     foreground_masks = {}
-                    for cls in range(1, self.num_mask_classes + 1):
-                        cls_mask = (pred_mask == cls).long()
+                    for mask_ids in range(pred_mask.shape[0]):
+                        cls = mask_ids + 1
+                        cls_mask = (pred_mask[mask_ids] == 1).long()
                         if cls_mask.sum().item() > 0:
                             foreground_masks[cls] = cls_mask.squeeze(0)
 
@@ -322,7 +384,7 @@ class Postprocessor_for_Instance_Segmentation:
                         mask_id_map = {1: 2, 2: 1, 3: 3}
 
                         category_id = pred_cls * self.num_mask_classes + (mask_id_map[mask_id] - 1)
-                        resized_mask = F.resize(mask_per_cls[None, None], (height, width)).squeeze().contiguous().cpu().numpy().astype(np.uint8)
+                        resized_mask = F.resize(mask_per_cls[None, None], (height, width), interpolation=InterpolationMode.NEAREST).squeeze().contiguous().cpu().numpy().astype(np.uint8)
                         # resized_mask = self.binary_mask_to_polygon(resized_mask)
                         resized_mask_rle = mask_utils.encode(np.asfortranarray(resized_mask))
                         resized_mask_rle["counts"] = resized_mask_rle["counts"].decode("utf-8")
@@ -331,11 +393,66 @@ class Postprocessor_for_Instance_Segmentation:
                                     "image_id": img_id,
                                     "category_id": category_id,
                                     "score": pred_score,
-                                    # "bbox": mask_utils.toBbox(resized_mask_rle).tolist(),  # 从 RLE 生成检测框, # error box coors
+                                    # "bbox": mask_utils.toBbox(resized_mask_rle).tolist(),  # 从 RLE 生成检测框, # error box coor=s
                                     "segmentation": resized_mask_rle,
                                 }
                         self.pred_ins.append(pred_ins)
 
+
+
+    def visualize_coco_results(self, image_id, coco_gt, coco_dt, save_path):
+        """
+        Visualize COCO GT and prediction results side by side.
+
+        Parameters:
+            image_id (int): The COCO image ID to visualize.
+            coco_gt (COCO): COCO object for ground truth.
+            coco_dt (COCO): COCO object for detection results.
+            save_path (str): Path to save the visualization.
+        """
+        # Load image metadata
+        image_info = coco_gt.loadImgs(image_id)[0]
+        image_path = image_info['file_name']
+        
+        # Load ground truth annotations for the image
+        gt_ann_ids = coco_gt.getAnnIds(imgIds=image_id)
+        gt_anns = coco_gt.loadAnns(gt_ann_ids)
+        
+        # Load prediction annotations for the image
+        dt_ann_ids = coco_dt.getAnnIds(imgIds=image_id)
+        dt_anns = coco_dt.loadAnns(dt_ann_ids)
+
+        # Load image
+        img = plt.imread(image_path)
+        if img is None:
+            raise ValueError(f"Image not found: {image_path}")
+
+        # Create a plot
+        fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+        axes[0].imshow(img)
+        axes[0].set_title('Ground Truth')
+        axes[0].axis('off')
+        
+        axes[1].imshow(img)
+        axes[1].set_title('Prediction')
+        axes[1].axis('off')
+
+        # Visualize GT annotations
+        for ann in gt_anns:
+            mask = coco_gt.annToMask(ann)
+            axes[0].imshow(mask, alpha=0.5, cmap='jet')
+
+        # Visualize predicted annotations
+        for ann in dt_anns:
+            mask = coco_dt.annToMask(ann)
+            axes[1].imshow(mask, alpha=0.5, cmap='jet')
+
+        # Save the visualization
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.tight_layout()
+        plt.savefig(save_path)
+        plt.close(fig)
+    
     def compute_coco_metrics_for_ins_seg(self, epoch):
         """
         使用 COCO API 计算实例分割的 mAP 和相关指标。
@@ -357,11 +474,11 @@ class Postprocessor_for_Instance_Segmentation:
 
         _gt_json_path = os.path.join(self.saved_jsons_dir, "_gt_val.json")
 
-        if not (os.path.exists(_gt_json_path) and os.path.isfile(_gt_json_path)):
-            coco_annotations = self.convert_polygon_to_rle(self.coco_data)
-            # 将预测结果保存为 COCO 格式的 JSON 文件
-            with open(_gt_json_path, "w") as f:
-                json.dump(coco_annotations, f)
+        # if not (os.path.exists(_gt_json_path) and os.path.isfile(_gt_json_path)):
+        coco_annotations = self.convert_polygon_to_rle(self.coco_data)
+        # 将预测结果保存为 COCO 格式的 JSON 文件
+        with open(_gt_json_path, "w") as f:
+            json.dump(coco_annotations, f)
 
         # 创建 COCO 对象
         coco_gt = COCO(_gt_json_path)
@@ -374,9 +491,15 @@ class Postprocessor_for_Instance_Segmentation:
         # 加载预测结果
         coco_dt = coco_gt.loadRes(_pred_json_path)
         
+        if self.val_ins_seg_class_agnostic:
+            for ann in coco_dt.dataset['annotations']:
+                ann['category_id'] = 1  # 将所有类别 ID 设置为 1
+            for ann in coco_gt.dataset['annotations']:
+                ann['category_id'] = 1  # 将所有类别 ID 设置为 1
+
         # 初始化 COCOeval
         coco_eval = COCOeval(coco_gt, coco_dt, iouType='segm')
-
+        
         # 运行评估
         coco_eval.evaluate()
         coco_eval.accumulate()
@@ -397,7 +520,6 @@ class Postprocessor_for_Instance_Segmentation:
             'AR_medium': coco_eval.stats[10],  # AR for medium objects
             'AR_large': coco_eval.stats[11],  # AR for large objects
         }
-    
         return metrics
 
 
@@ -446,3 +568,21 @@ class Postprocessor_for_Instance_Segmentation:
             if len(contour) >= 6:  # 至少需要3个点（6个坐标）
                 segmentation.append(contour)
         return segmentation
+    
+    def denormalize(self, tensor, mean, std):
+        """
+        对归一化后的图像进行反归一化，恢复原始像素值范围。
+
+        Args:
+            tensor (torch.Tensor): 被归一化的图像张量，形状 (C, H, W)。
+            mean (list or tuple): 每个通道的均值。
+            std (list or tuple): 每个通道的标准差。
+
+        Returns:
+            torch.Tensor: 反归一化后的图像张量，形状 (C, H, W)。
+        """
+        device = tensor.device
+        mean = torch.tensor(mean).view(-1, 1, 1).to(device)  # 调整形状以广播
+        std = torch.tensor(std).view(-1, 1, 1).to(device)    # 调整形状以广播
+
+        return tensor * std + mean

@@ -282,7 +282,7 @@ class JsonBBoxLoader:
                             '84_crown':29,
                             '74_crown':29,
                             
-                            '110': 81,
+                            '110':81,
                             "55'":4,
                             '622':6,
                             '585':19,
@@ -333,7 +333,6 @@ class JsonBBoxLoader:
                     className_to_boxXYXY[className] = boxXYXY
         
         assert className_for_image_classify != -1
-        
         # modify the self.box_mask_pairs_dict (e.g., recover the human-labeled box rather than the nearly bounding box of mask)
         box_mask_pairs_dict_return = {}
         key_for_box_mask_pairs_dict = self.video_json_root.split('/')[-1] + '/' + str(frame_id).zfill(3)

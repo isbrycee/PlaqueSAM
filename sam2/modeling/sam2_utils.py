@@ -214,6 +214,46 @@ def sample_box_points(
         box_labels = box_labels.reshape(B, -1) # size(1,12)
     return box_coords, box_labels
 
+def generate_masks_vectorized(boxes_tensor, image_wh):
+    """
+    向量化实现边界框到掩码的批量转换
+    输入形状：(6, 2, 2) 的边界框坐标，返回形状：(6, w, h) 的掩码张量
+    """
+    # 确保输入设备一致
+    device = boxes_tensor.device
+    w, h = image_wh
+    
+    # 预处理坐标 (向量化排序和裁剪)
+    x_coords = boxes_tensor[..., 0]  # [6, 2]
+    y_coords = boxes_tensor[..., 1]
+    x_sorted, _ = torch.sort(x_coords, dim=1)
+    y_sorted, _ = torch.sort(y_coords, dim=1)
+    
+    # 提取并限制坐标范围
+    x0, x1 = x_sorted[:, 0].clamp(0, w), x_sorted[:, 1].clamp(0, w)
+    y0, y1 = y_sorted[:, 0].clamp(0, h), y_sorted[:, 1].clamp(0, h)
+    
+    # 生成坐标网格 (核心优化点)
+    xx, yy = torch.meshgrid(
+        torch.arange(w, device=device),
+        torch.arange(h, device=device),
+        indexing='ij'  # 确保形状为 (w, h)
+    )
+    
+    # 广播比较计算掩码 (无循环)
+    x0 = x0.view(-1, 1, 1)  # [6, 1, 1]
+    x1 = x1.view(-1, 1, 1)
+    y0 = y0.view(-1, 1, 1)
+    y1 = y1.view(-1, 1, 1)
+    
+    # 向量化条件判断
+    mask = (
+        (xx >= x0) & (xx < x1) &
+        (yy >= y0) & (yy < y1)
+    ).float()  # [6, w, h]
+    
+    return mask
+
 def sample_batched_one_box_points(
     masks: torch.Tensor,
     is_provide_box: bool,
@@ -239,14 +279,16 @@ def sample_batched_one_box_points(
     num_class_in_mask, B, H, W = masks.shape
     
     if not is_provide_box: # in case of no box prompt input; overwise will raise error
+        print('error')
         # box_coords = mask_to_box(masks) # size [3, 1, 4]
         # box_labels = torch.tensor(
         #     [top_left_label, bottom_right_label], dtype=torch.int, device=device
         # ).repeat(B) # [2,3,2,3,2,3]
         box_coords = torch.zeros(1, 1, 2, device=device)
         box_labels = -torch.ones(1, 1, dtype=torch.int32, device=device)
-
-        return box_coords, box_labels
+        box_masks = generate_masks_vectorized(box_coords, (W, H))
+        
+        return box_coords, box_labels, box_masks
     else:
         num_box = len(boxes)
         box_coords = torch.stack([torch.tensor(item[0]) for item in boxes.values()]).unsqueeze(1).to(device)
@@ -272,8 +314,9 @@ def sample_batched_one_box_points(
         
     box_coords = box_coords.reshape(-1, 2, 2)  # always 2 points size(3,2,2)
     box_labels = box_labels.reshape(-1, 2) # size(3,2)
+    box_masks = generate_masks_vectorized(box_coords, (W, H))
 
-    return box_coords, box_labels
+    return box_coords, box_labels, box_masks
 
 def sample_random_points_from_errors(gt_masks, pred_masks, num_pt=1):
     """

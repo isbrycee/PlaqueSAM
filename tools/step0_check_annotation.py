@@ -91,6 +91,7 @@ def check_and_resave_jsons(json_folder, save_folder):
             if _item["shape_type"] == "rectangle":
                 if _item['label'].startswith('mouth'):
                     if '_' not in _item['label']:
+                        print(src_json)
                         print(_item['label'])
                     else:
                         if int(_item['label'].split('_')[1]) > 7:
@@ -129,6 +130,7 @@ def check_and_resave_jsons(json_folder, save_folder):
                 elif _item['label'].isdecimal() and len(_item['label']) == 2:
                     _item['label'] = str(int(_item['label']) + 40)
                 else:
+                    print(src_json)
                     print(_item['label'])
                     # import pdb; pdb.set_trace()
             
@@ -173,9 +175,9 @@ def organize_data(root_dir):
                     check_and_resave_jsons(json_folder, json_save_dir)
 
 # 输入多个根目录路径
-root_directories = "/home/jinghao/projects/dental_plague_detection/dataset/"
+root_directories = "/home/jinghao/projects/dental_plague_detection/dataset/2025_revised_bak_raw_data_from_kathy/"
 
-date = [ '15_2_2025_revision_1',]
+date = [ '9_26', '10_8/', '10_10', '10_24', '10_31', '11_7', '11_12', '11_19', '11_20', '12_3', '12_5']
 # root_directories = ["/home/hust/haojing/dental_plague_dataset/10_24", ]
 # root_directories = '/home/hust/haojing/dental_plague_dataset/raw_data'
 # resaved_json_dir = '/home/hust/haojing/dental_plague_dataset/raw_data/resaved_json'

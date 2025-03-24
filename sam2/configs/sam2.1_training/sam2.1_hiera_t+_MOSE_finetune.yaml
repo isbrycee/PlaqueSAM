@@ -1,18 +1,19 @@
 # @package _global_
 
 scratch:
-  resolution: 1024
+  resolution: 512
   train_batch_size: 1
   num_train_workers: 16 # 16
   num_frames: 6
   num_frames_with_invalid: 8
   num_multimask_outputs: 3
   max_num_objects: 4
-  base_lr: 1.0e-4 # 5.0e-6
+  base_lr: [1.0e-4, 1.0e-5, 1.0e-6] # [5.0e-4, 5.0e-5, 5.0e-6] # 5.0e-6
   vision_lr: 5.0e-05 # 3.0e-06
   phases_per_epoch: 1
-  num_epochs: 100
-  dataset_root_path: /home/jinghao/projects/dental_plague_detection/dataset/ # temp_debug/
+  num_epochs: 150
+  dataset_root_path: /home/jinghao/projects/dental_plague_detection/dataset/temp_debug # 2025_revised_for_training_split/ # /home/jinghao/projects/dental_plague_detection/dataset/ # temp_debug/
+  train_stage: 'all' # '2nd' '1st'
 dataset_train:
   # PATHS to Dataset
   img_folder: ${scratch.dataset_root_path}/train/JPEGImages/
@@ -74,6 +75,7 @@ trainer:
   seed_value: 123
   val_epoch_freq: 1
   val_boxes_class_agnostic: False
+  val_ins_seg_class_agnostic: False
 
   model:
     _target_: training.model.sam2.SAM2Train
@@ -97,7 +99,7 @@ trainer:
           scale: null
           temperature: 10000
         d_model: 256
-        backbone_channel_list: [768, 384, 192, 96] # [896, 448, 224, 112] # [768, 384, 192, 96] # [896, 448, 224, 112]
+        backbone_channel_list: [768, 384, 192, 96] # [896, 448, 224, 112] # [768, 384, 192, 96]
         fpn_top_down_levels: [2, 3]  # output level 0 and 1 directly use the backbone features
         fpn_interp_model: nearest
 
@@ -106,7 +108,7 @@ trainer:
       _target_: sam2.modeling.image_classify_decoder.image_classify_decoder
       input_dim: 256
       hidden_dim: 256
-      num_mlp_layers: 3
+      num_mlp_layers: 2
       num_classes: 7
       num_frames: ${scratch.num_frames_with_invalid}
       dropout: 0.0
@@ -120,13 +122,13 @@ trainer:
       hidden_dim: 256
       dec_n_points: 4
       dim_feedforward: 2048
-      num_decoder_layers: 6
+      num_decoder_layers: 2
       num_feature_levels: 4
-      num_queries: 900
+      num_queries: 100
       num_classes: 31
       num_frames: ${scratch.num_frames}
       is_use_prior_loc_templates: False
-      prior_loc_templates_npy_input_path: '/home/jinghao/projects/dental_plague_detection/Self-PPD/saved_tensors'
+      # prior_loc_templates_npy_input_path: '/home/jinghao/projects/dental_plague_detection/Self-PPD/templates'
     # end
     
     # memory_attention:
@@ -186,7 +188,7 @@ trainer:
     #         layer_scale_init_value: 1e-6
     #         use_dwconv: True  # depth-wise convs
     #       num_layers: 2
-
+    train_stage: ${scratch.train_stage}
     is_class_agnostic: False # add by bryce
     use_one_box_per_prompt: True # add by bryce
     flag_is_filter_bad_images: False # add by bryce
@@ -194,23 +196,26 @@ trainer:
     num_frames: ${scratch.num_frames}
     num_frames_with_invalid: ${scratch.num_frames_with_invalid}
     num_multimask_outputs: ${scratch.num_multimask_outputs}
-    threshold_for_boxes: 0.1
-    threshold_for_masks: 0.5
+    threshold_for_boxes: 0.3 # add by bryce
+    threshold_for_masks: 0.5 # add by bryce
+    box_decoder_max_num_select: 20 # add by bryce
+    box_decoder_postprocess_nms_iou_threshold: 0.5 # add by bryce
+    prior_loc_templates_npy_input_path: '/home/jinghao/projects/dental_plague_detection/Self-PPD/templates'
     num_maskmem: 5
     image_size: ${scratch.resolution}
     # apply scaled sigmoid on mask logits for memory encoder, and directly feed input mask as output mask
     sigmoid_scale_for_mem_enc: 20.0
     sigmoid_bias_for_mem_enc: -10.0
-    use_mask_input_as_output_without_sam: true
+    use_mask_input_as_output_without_sam: false
     # Memory
-    directly_add_no_mem_embed: true
-    no_obj_embed_spatial: true
+    directly_add_no_mem_embed: false
+    no_obj_embed_spatial: false
     # use high-resolution feature map in the SAM mask decoder
     use_high_res_features_in_sam: true
     # output 3 masks on the first click on initial conditioning frames
     multimask_output_in_sam: true # false changed by bryce
     # SAM heads
-    iou_prediction_use_sigmoid: True
+    iou_prediction_use_sigmoid: true
     # cross-attend to object pointers from other frames (based on SAM output tokens) in the encoder
     use_obj_ptrs_in_encoder: true
     add_tpos_enc_to_obj_ptrs: true
@@ -218,9 +223,9 @@ trainer:
     use_signed_tpos_enc_to_obj_ptrs: true
     only_obj_ptrs_in_the_past_for_eval: true
     # object occlusion prediction
-    pred_obj_scores: true # changed by bryce
-    pred_obj_scores_mlp: true # changed by bryce
-    fixed_no_obj_ptr: true # changed by bryce
+    pred_obj_scores: false # changed by bryce
+    pred_obj_scores_mlp: false # changed by bryce
+    fixed_no_obj_ptr: false # changed by bryce
     # multimask tracking settings
     multimask_output_for_tracking: false
     use_multimask_token_for_obj_ptr: true # false; changed by bryce 
@@ -341,39 +346,49 @@ trainer:
     #   - 'image_encoder.*'
     #   - '*norm*'
 
-    param_group_modifiers:
-      - _target_: training.optimizer.layer_decay_param_modifier
-        _partial_: True
-        layer_decay_value: 0.9 # 0.9
-        apply_to: 'image_encoder.trunk'
-        overrides:
-          - pattern: '*pos_embed*'
-            value: 1.0
+    # param_group_modifiers:
+    #   - _target_: training.optimizer.layer_decay_param_modifier
+    #     _partial_: True
+    #     layer_decay_value: 0.9 # 0.9
+    #     apply_to: 'image_encoder.trunk'
+    #     overrides:
+    #       - pattern: '*pos_embed*'
+    #         value: 1.0
 
     options:
       lr:
         - scheduler:
-            _target_: fvcore.common.param_scheduler.CosineParamScheduler
-            start_value: ${scratch.base_lr}
-            end_value: ${divide:${scratch.base_lr},10}
-        - scheduler:
-            _target_: fvcore.common.param_scheduler.CosineParamScheduler
-            start_value: ${scratch.vision_lr}
-            end_value: ${divide:${scratch.vision_lr},10}
-          param_names:
-            - 'image_encoder.*'
-            # - 'sam_prompt_encoder.*'
-            # - 'sam_mask_decoder.*'
-      weight_decay:
-        - scheduler:
-            _target_: fvcore.common.param_scheduler.ConstantParamScheduler
-            value: 0.1
-        - scheduler:
-            _target_: fvcore.common.param_scheduler.ConstantParamScheduler
-            value: 0.0
-          param_names:
-            - 'image_encoder.trunk.*bias*' # # changed by bryce from '*bias*'
-          module_cls_names: ['torch.nn.LayerNorm'] # changed by bryce
+            _target_: fvcore.common.param_scheduler.MultiStepParamScheduler
+            values: ${scratch.base_lr}
+            milestones: [100, 130, 150]
+        # - scheduler:
+        #     _target_: fvcore.common.param_scheduler.MultiStepParamScheduler
+        #     values: ${scratch.vision_lr}
+        #     milestones: [35, 45, 50]
+        #   param_names:
+        #     - 'sam_prompt_encoder.*'
+        # - scheduler:
+        #     _target_: fvcore.common.param_scheduler.CosineParamScheduler
+        #     start_value: ${scratch.base_lr}
+        #     end_value: ${divide:${scratch.base_lr},10}
+        # - scheduler:
+        #     _target_: fvcore.common.param_scheduler.CosineParamScheduler
+        #     start_value: ${scratch.vision_lr}
+        #     end_value: ${divide:${scratch.vision_lr},10}
+        #   param_names:
+        #     - 'image_encoder.*'
+        #     # - 'sam_prompt_encoder.*'
+        #     # - 'sam_mask_decoder.*'
+      # weight_decay:
+      #   - scheduler:
+      #       _target_: fvcore.common.param_scheduler.CosineParamScheduler
+      #       value: 0.1
+      #   - scheduler:
+      #       _target_: fvcore.common.param_scheduler.CosineParamScheduler
+      #       value: 0.0
+      #     param_names:
+      #       - 'bias'
+      #     module_cls_names: ['torch.nn.LayerNorm']
 
   loss:
     all:
@@ -400,7 +415,7 @@ trainer:
       focal_gamma_for_box: 3
       supervise_all_iou: true
       iou_use_l1_loss: true
-      pred_obj_scores: true 
+      pred_obj_scores: false 
       focal_gamma_obj_score: 0.0
       focal_alpha_obj_score: -1.0
 
@@ -416,7 +431,7 @@ trainer:
         # for boxes
         loss_boxes_bbox: 5 # 5
         loss_boxes_giou: 2 # 2
-        loss_boxes_ce: 5 # 5
+        loss_boxes_ce: 10 # 5
         loss_boxes_xy: 1
         loss_boxes_hw: 1
 
@@ -425,7 +440,7 @@ trainer:
 
       supervise_all_iou: true
       iou_use_l1_loss: true
-      pred_obj_scores: true # changed by bryce
+      pred_obj_scores: false # changed by bryce
       focal_gamma_obj_score: 0.0
       focal_alpha_obj_score: -1.0
 
@@ -447,6 +462,7 @@ trainer:
   checkpoint:
     save_dir: ${launcher.experiment_log_dir}/checkpoints
     save_freq: 0 # 0 only last checkpoint is saved.
+
     model_weight_initializer:
       _partial_: True
       _target_: training.utils.checkpoint_utils.load_state_dict_into_model
@@ -462,7 +478,7 @@ trainer:
 launcher:
   num_nodes: 1
   gpus_per_node: 1
-  experiment_log_dir: logs_lr1e-4_bblr5e-5_4scales_twostage_class_weights_wd_1024_100e_tiny # Path to log directory, defaults to ./sam2_logs/${config_name}
+  experiment_log_dir: logs_tiny_1024_50e_lr1e-4_bblr5e-5_wd_4scales_twostage_100queries_test_512_debug # maskdino # Path to log directory, defaults to ./sam2_logs/${config_name}
 
 # SLURM args if running on a cluster
 submitit:

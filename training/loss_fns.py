@@ -21,6 +21,109 @@ import matplotlib.pyplot as plt
 
 from training.utils.mask_RLE_utils import encode_mask_rle, decode_mask_rle
 
+####################################### Derived from MaskDIN ##################################################
+
+from detectron2.projects.point_rend.point_features import (
+    get_uncertain_point_coords_with_randomness,
+    point_sample,
+)
+
+def sigmoid_focal_loss_MaskDINO(inputs, targets, num_boxes, alpha: float = 0.25, gamma: float = 2):
+    """
+    Loss used in RetinaNet for dense detection: https://arxiv.org/abs/1708.02002.
+    Args:
+        inputs: A float tensor of arbitrary shape.
+                The predictions for each example.
+        targets: A float tensor with the same shape as inputs. Stores the binary
+                 classification label for each element in inputs
+                (0 for the negative class and 1 for the positive class).
+        alpha: (optional) Weighting factor in range (0,1) to balance
+                positive vs negative examples. Default = -1 (no weighting).
+        gamma: Exponent of the modulating factor (1 - p_t) to
+               balance easy vs hard examples.
+    Returns:
+        Loss tensor
+    """
+    prob = inputs.sigmoid()
+    ce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none")
+    p_t = prob * targets + (1 - prob) * (1 - targets)
+    loss = ce_loss * ((1 - p_t) ** gamma)
+
+    if alpha >= 0:
+        alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
+        loss = alpha_t * loss
+
+
+    return loss.mean(1).sum() / num_boxes
+
+def dice_loss_MaskDINO(
+        inputs: torch.Tensor,
+        targets: torch.Tensor,
+        num_masks: float,
+    ):
+    """
+    Compute the DICE loss, similar to generalized IOU for masks
+    Args:
+        inputs: A float tensor of arbitrary shape.
+                The predictions for each example.
+        targets: A float tensor with the same shape as inputs. Stores the binary
+                 classification label for each element in inputs
+                (0 for the negative class and 1 for the positive class).
+    """
+    inputs = inputs.sigmoid()
+    inputs = inputs.flatten(1)
+    numerator = 2 * (inputs * targets).sum(-1)
+    denominator = inputs.sum(-1) + targets.sum(-1)
+    loss = 1 - (numerator + 1) / (denominator + 1)
+    return loss.sum() / num_masks
+
+
+dice_loss_jit = torch.jit.script(
+    dice_loss_MaskDINO
+)  # type: torch.jit.ScriptModule
+
+def sigmoid_ce_loss_MaskDINO(
+        inputs: torch.Tensor,
+        targets: torch.Tensor,
+        num_masks: float,
+    ):
+    """
+    Args:
+        inputs: A float tensor of arbitrary shape.
+                The predictions for each example.
+        targets: A float tensor with the same shape as inputs. Stores the binary
+                 classification label for each element in inputs
+                (0 for the negative class and 1 for the positive class).
+    Returns:
+        Loss tensor
+    """
+    loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none")
+
+    return loss.mean(1).sum() / num_masks
+
+
+sigmoid_ce_loss_jit = torch.jit.script(
+    sigmoid_ce_loss_MaskDINO
+)  # type: torch.jit.ScriptModule
+
+def calculate_uncertainty(logits):
+    """
+    We estimate uncerainty as L1 distance between 0.0 and the logit prediction in 'logits' for the
+        foreground class in `classes`.
+    Args:
+        logits (Tensor): A tensor of shape (R, 1, ...) for class-specific or
+            class-agnostic, where R is the total number of predicted masks in all images and C is
+            the number of foreground classes. The values are logits.
+    Returns:
+        scores (Tensor): A tensor of shape (R, 1, ...) that contains uncertainty scores with
+            the most uncertain locations having the highest uncertainty score.
+    """
+    assert logits.shape[1] == 1
+    gt_class_logits = logits.clone()
+    return -(torch.abs(gt_class_logits))
+
+############################################ End ####################################################
+
 def dice_loss(inputs, targets, num_objects, loss_on_multimask=False):
     """
     Compute the DICE loss, similar to generalized IOU for masks
@@ -126,38 +229,6 @@ def sigmoid_focal_loss(
 
 
 
-# def focal_loss_for_semantic_seg(logits, targets, alpha=1.0, gamma=2.0, class_weights=None, reduction='mean'):
-
-#     # 检查 gt 中的值是否在合法范围内
-#     if torch.any(targets >= logits.shape[1]):
-#         raise ValueError("Ground truth contains invalid class indices.")
-#     device = logits.device
-#     num_classes = logits.shape[1]
-#     class_counts = torch.bincount(targets.view(-1), minlength=num_classes)
-
-#     # 只考虑前景类别（1, 2, 3）
-#     foreground_counts = class_counts[1:4]
-#     # 计算权重，忽略数量为 0 的类别
-#     class_weights = torch.zeros(3)  # 初始化前景类别的权重
-#     for i, count in enumerate(foreground_counts):
-#         if count > 0:  # 忽略数量为 0 的类别
-#             class_weights[i] = 1.0 / count
-
-#     # 归一化权重，使得权重之和为1
-#     if class_weights.sum() > 0:  # 确保有权重被计算
-#         class_weights = class_weights / class_weights.sum()
-
-#     # 构建长度为 4 的权重张量，背景类别的权重设为 0
-#     final_class_weights = torch.zeros(4)  # 背景类别权重为 0
-#     final_class_weights[1:4] = class_weights  # 填充前景类别的权重
-
-#     criterion = nn.CrossEntropyLoss(ignore_index=0, weight=final_class_weights.to(device))
-    
-#     # 计算损失
-#     loss = criterion(logits, targets.long())  # gt.squeeze(1) 将 (1, 1, 512, 512) 变为 (1, 512, 512)
-
-
-#     return loss
 
 def focal_loss_for_semantic_seg(logits, targets, alpha=1.0, gamma=2.0, class_weights=None, reduction='mean'):
     """
@@ -175,8 +246,6 @@ def focal_loss_for_semantic_seg(logits, targets, alpha=1.0, gamma=2.0, class_wei
     # 检查目标中的类别索引是否合法
     if torch.any(targets >= C):
         raise ValueError("Ground truth contains invalid class indices.")
-
-    # visualize_semantic_segmentation(targets)
 
     # ------------------------------------------
     # 自动计算类别权重（基于整个 batch 的统计）
@@ -198,145 +267,40 @@ def focal_loss_for_semantic_seg(logits, targets, alpha=1.0, gamma=2.0, class_wei
         # 使用手动指定的类别权重
         final_class_weights = class_weights.to(device)
 
-    # print(final_class_weights)
     # ------------------------------------------
-    # 计算交叉熵损失（带权重）
+    # 计算 Focal Loss
     # ------------------------------------------
-    # 使用 CrossEntropyLoss（自动处理批处理）
-    # ignore_index=0 表示忽略背景类别
+    # 1. 计算 softmax 概率
+    probs = F.softmax(logits, dim=1)  # (B, C, H, W)
 
-    criterion = nn.CrossEntropyLoss(
-        weight=final_class_weights,
-        # ignore_index=0,
-        reduction=reduction
-    )
+    # 2. 获取目标类别对应的预测概率
+    targets_one_hot = F.one_hot(targets, num_classes=C).permute(0, 3, 1, 2)  # 转换为 one-hot 格式 (B, C, H, W)
+    targets_one_hot = targets_one_hot.to(device, dtype=probs.dtype)
 
-    # 计算损失（logits 形状需为 (B, C, H, W)，targets 形状需为 (B, H, W)）
-    loss = criterion(logits, targets.long())
+    # 3. 计算 focal loss 的 (1 - p_t)^\gamma 和 log(p_t)
+    pt = (probs * targets_one_hot).sum(dim=1)  # 只保留目标类别的概率 (B, H, W)
+    log_pt = torch.log(pt + 1e-6)  # 防止 log(0)
+    focal_factor = (1 - pt) ** gamma  # (1 - p_t)^\gamma
 
-    return loss
+    # 4. 加入 alpha 平衡参数
+    if class_weights is not None:
+        # 获取每个像素点的对应类别权重
+        alpha_t = final_class_weights.gather(0, targets.view(-1)).view_as(targets)  # (B, H, W)
+    else:
+        alpha_t = alpha  # 使用固定 alpha 值
 
+    # 5. 计算最终的 focal loss
+    focal_loss = -alpha_t * focal_factor * log_pt  # 按公式计算 Focal Loss
 
-# def focal_loss_for_semantic_seg(logits, targets, alpha=1.0, gamma=2.0, class_weights=None, reduction='mean'):
-#     """
-#     Focal Loss for multi-class classification.
-
-#     Args:
-#         logits: [batch_size, num_classes, H, W] - raw output from the model.
-#         targets: [batch_size, H, W] - ground truth labels (integer class indices).
-#         alpha (float): Weighting factor for classes.
-#         gamma (float): Focusing parameter.
-#         reduction (str): Specifies the reduction to apply: 'none', 'mean', 'sum'.
-
-#     Returns:
-#         torch.Tensor: Computed Focal Loss.
-#     """
-#     # changed by bryce; 20250212
-#     # probs = logits.sigmoid()
-#     # Apply softmax to get probabilities
-#     probs = F.softmax(logits, dim=1)  # [batch_size, num_classes, H, W]
-    
-#     # One-hot encode targets
-#     num_classes = logits.size(1)  # Number of classes
-#     targets_one_hot = torch.zeros_like(probs)  # Create a tensor of the same shape as probs
-#     targets_one_hot.scatter_(1, targets.unsqueeze(1), 1)  # Convert targets to one-hot encoding
-
-#     # remove background
-#     # probs = probs[:, 1:, :, :]
-#     # targets_one_hot = targets_one_hot[:, 1:, :, :]
-
-#     # Gather probabilities of the target class
-#     probs_target = (probs * targets_one_hot).sum(dim=1)  # [batch_size, H, W]
-
-#     # Compute Focal Loss
-#     focal_weight = (1 - probs_target) ** gamma  # [batch_size, H, W]
-#     log_probs = torch.log(probs_target + 1e-8)  # Avoid log(0)
-#     loss = -alpha * focal_weight * log_probs  # [batch_size, H, W]
-
-#     # Apply class weights if provided
-#     if class_weights is not None:
-#         # Gather class weights for each pixel
-#         class_weights = class_weights.to(logits.device)  # Ensure weights are on the same device
-#         weights = class_weights[targets]  # [batch_size, H, W]
-#         loss = loss * weights  # Weight the loss for each pixel
-
-#     # Apply reduction
-#     if reduction == 'mean':
-#         return loss.mean()
-#     elif reduction == 'sum':
-#         return loss.sum()
-#     else:  # 'none'
-#         return loss
-
-# def focal_loss_for_semantic_seg(logits, gt, ignore_index=0):
-#     """
-#     计算语义分割的监督损失，并忽略背景类的像素。
-#     修复了可能导致 NaN 的问题。
-    
-#     Args:
-#         logits (torch.Tensor): 模型输出的 logits，shape 为 (N, C, H, W)，其中 C 是类别数。
-#         gt (torch.Tensor): Ground Truth 标签，shape 为 (N, H, W)。
-#         ignore_index (int): 要忽略的类别索引，默认为 0（背景类）。
-    
-#     Returns:
-#         loss (torch.Tensor): 计算的监督损失。
-#     """
-#     # 确保 logits 的 shape 是 (N, C, H, W)，gt 的 shape 是 (N, H, W)
-#     assert logits.shape[0] == gt.shape[0], "Batch size must match between logits and gt"
-#     assert logits.shape[2:] == gt.shape[1:], "Spatial dimensions must match between logits and gt"
-#     assert logits.shape[1] > ignore_index, "Logits must have at least ignore_index+1 channels"
-
-#     # 检查 gt 中的值是否在合法范围内
-#     if torch.any(gt >= logits.shape[1]):
-#         raise ValueError("Ground truth contains invalid class indices.")
-
-#     num_classes = logits.shape[1]
-#     class_counts = torch.bincount(gt.view(-1), minlength=num_classes)
-#     class_weights = 1.0 / (class_counts.float() + 1e-6)  # 避免除以 0
-#     class_weights /= class_weights.sum()  # 归一化
-
-#     # # 避免 logits 值过大或过小导致数值不稳定
-#     # logits = torch.clamp(logits, min=-100, max=100)
-
-#     # # 使用 CrossEntropyLoss，设置 ignore_index 来忽略背景类
-#     loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights, ignore_index=ignore_index)
-    
-#     # # 计算损失
-#     loss = loss_fn(logits, gt)
-    
-#     # 创建一个掩码，忽略背景类（第 0 类）
-#     # mask = (gt != 0).float()
-    
-#     # # 计算交叉熵损失
-#     # criterion = nn.CrossEntropyLoss(reduction='none')  # 使用 reduction='none' 来获取每个像素的损失
-#     # loss = criterion(logits, gt)
-
-#     # # 应用掩码，忽略背景类的损失
-#     # loss = (loss * mask).sum() / mask.sum()  # 只计算非背景类的平均损失
-
-#     # # 检查损失是否为 NaN
-#     # if torch.isnan(loss):
-#     #     return torch.tensor(0.0, device=logits.device)
-#     #     raise ValueError("Loss became NaN. Check your logits and ground truth data.")
-#     print("mask loss: ", loss)
-#     return loss
-
-# def focal_loss_for_semantic_seg(inputs, target, num_classes=0, alpha=0.5, gamma=2):
-#     n, c, h, w = inputs.size()
-#     nt, ht, wt = target.size()
-#     # if h != ht and w != wt:
-#     #     inputs = F.interpolate(inputs, size=(ht, wt), mode="bilinear", align_corners=True)
-
-#     temp_inputs = inputs.transpose(1, 2).transpose(2, 3).contiguous().view(-1, c)
-#     temp_target = target.view(-1)
-
-#     logpt  = -nn.CrossEntropyLoss(ignore_index=num_classes, reduction='none')(temp_inputs, temp_target) # weight=cls_weights,
-#     pt = torch.exp(logpt)
-#     if alpha is not None:
-#         logpt *= alpha
-#     loss = -((1 - pt) ** gamma) * logpt
-#     loss = loss.mean()
-#     return loss
+    # ------------------------------------------
+    # 损失聚合
+    # ------------------------------------------
+    if reduction == 'mean':
+        return focal_loss.mean()
+    elif reduction == 'sum':
+        return focal_loss.sum()
+    else:
+        return focal_loss
 
 
 def iou_loss(
@@ -452,6 +416,10 @@ class MultiStepMultiMasksAndIous(nn.Module):
         self.iou_use_l1_loss = iou_use_l1_loss
         self.pred_obj_scores = pred_obj_scores
 
+        self.num_points = 12544
+        self.oversample_ratio = 3.0
+        self.importance_sample_ratio = 0.75
+
     def forward(self, outs_batch: List[Dict], targets_batch: torch.Tensor, use_one_box_per_prompt: torch.bool, mode: str):
         assert len(outs_batch) == len(targets_batch) and len(outs_batch) > 0
         if mode == 'val' and use_one_box_per_prompt:
@@ -501,32 +469,110 @@ class MultiStepMultiMasksAndIous(nn.Module):
         with the lowest focal+dice loss between predicted mask and ground-truth.
         If `supervise_all_iou` is True, we backpropagate ious losses for all predicted masks.
         """
-        # self.visualize_semantic_segmentation(targets, 'targets.png')
         target_masks = targets.unsqueeze(1).float()
         assert target_masks.dim() == 4  # [N, 1, H, W]
-        src_masks_list = outputs["multistep_pred_multimasks_high_res"] # len()=1, each (6, 4, 256, 256)
+        src_masks_low_res_list = outputs["multistep_pred_multimasks"]
         ious_list = outputs["multistep_pred_ious"] # len()=6, each (6, 4)
         object_score_logits_list = outputs["multistep_object_score_logits"] # len()=1, each (6, 1)
+        aux_src_masks_list = outputs['multistep_aux_pred_multimasks']
 
-        assert len(src_masks_list) == len(ious_list)
+        assert len(src_masks_low_res_list) == len(ious_list)
         assert len(object_score_logits_list) == len(ious_list)
 
         # accumulate the loss over prediction steps
         losses = {"loss_mask": 0, "loss_dice": 0, "loss_iou": 0, "loss_class": 0}
-        for src_masks, ious, object_score_logits in zip(
-            src_masks_list, ious_list, object_score_logits_list
+        for src_masks_low_res, ious, object_score_logits in zip(
+            src_masks_low_res_list, ious_list, object_score_logits_list
         ):
             # self._update_losses(
             #     losses, src_masks, target_masks, ious, num_objects, object_score_logits
             # )
-            draw_Data = torch.argmax(src_masks, dim=1).int()
 
+            # draw_Data = torch.argmax(src_masks, dim=1).int()
             # self.visualize_semantic_segmentation(draw_Data)
-            self._update_losses_for_semantic_segmentation(
-                losses, src_masks, target_masks, ious, num_objects, object_score_logits, mode
+
+            # self._update_losses_for_semantic_segmentation(
+            #     losses, src_masks, target_masks, ious, num_objects, object_score_logits, mode
+            # )
+
+            self._update_losses_for_MaskDINO_ins_seg_loss(
+                losses, src_masks_low_res, target_masks, num_objects, ious, object_score_logits, mode
             )
+        
+        for aux_src_masks in aux_src_masks_list:
+            self._update_losses_for_MaskDINO_ins_seg_loss(
+                losses, aux_src_masks, target_masks, num_objects=num_objects,
+            )
+
         losses[CORE_LOSS_KEY] = self.reduce_loss(losses)
         return losses
+
+    def _update_losses_for_MaskDINO_ins_seg_loss(
+        self, losses, src_masks, target_masks, num_objects, ious=None, object_score_logits=None, mode=None
+    ):
+        B, C, H, W = src_masks.shape
+        _, _, gt_H, gt_W = target_masks.shape
+
+        target_masks = target_masks.squeeze(1).to(torch.int64) #(6,512,512)
+        target_masks = F.one_hot(target_masks, num_classes=C+1).permute(0, 3, 1, 2)
+        src_masks = src_masks.reshape(-1, H, W)
+        target_masks = target_masks[:, 1:].reshape(-1, gt_H, gt_W)
+    
+        # self.visualize_semantic_segmentation(target_masks, save_path='gt.png')
+        # self.visualize_semantic_segmentation(src_masks, save_path='our_pred.png')
+
+        # filter no foreground mask on both targets and preds
+        exist_foreground_flag_mask = torch.any(target_masks, dim=(1, 2))  # 检查每个矩阵是否有至少一个1
+        target_masks = target_masks[exist_foreground_flag_mask]
+        src_masks = src_masks[exist_foreground_flag_mask]
+
+        src_masks = src_masks[:, None].float() # (14,1,256,256)
+        target_masks = target_masks[:, None].float() # (14,1,1024,1024)
+
+        with torch.no_grad():
+            # sample point_coords
+            point_coords = get_uncertain_point_coords_with_randomness(
+                src_masks,
+                lambda logits: calculate_uncertainty(logits),
+                self.num_points,
+                self.oversample_ratio,
+                self.importance_sample_ratio,
+            )
+            # get gt labels
+            point_labels = point_sample(
+                target_masks,
+                point_coords,
+                align_corners=False,
+            ).squeeze(1)
+
+        point_logits = point_sample(
+            src_masks,
+            point_coords,
+            align_corners=False,
+        ).squeeze(1)
+
+
+        losses["loss_mask"] += sigmoid_ce_loss_jit(point_logits, point_labels, num_objects)
+        losses["loss_dice"] += dice_loss_jit(point_logits, point_labels, num_objects)
+
+        del src_masks
+        del target_masks
+        torch.cuda.empty_cache()
+        # if mode == 'val':
+        #     src_masks, _ = torch.max(src_masks, dim=0, keepdim=True) # (1, 512, 512)
+        #     target_masks, _ = torch.max(target_masks, dim=0, keepdim=True) # (1, 512, 512)
+
+        loss_multiiou = torch.tensor(
+                0.0, dtype=losses['loss_mask'].dtype, device=losses['loss_mask'].device
+            )
+        loss_class = torch.tensor(
+            0.0, dtype=losses['loss_mask'].dtype, device=losses['loss_mask'].device
+        )
+
+        # sum over batch dimension (note that the losses are already divided by num_objects)
+        losses["loss_iou"] += loss_multiiou
+        losses["loss_class"] += loss_class # torch.tensor(0.0, device=target_masks.device) # loss_class
+
 
     def _update_losses_for_semantic_segmentation(
         self, losses, src_masks, target_masks, ious, num_objects, object_score_logits, mode
@@ -535,13 +581,13 @@ class MultiStepMultiMasksAndIous(nn.Module):
         # src_masks = src_masks.transpose(1,0).contiguous() # (4,6,512,512)
         # target_masks = target_masks.expand_as(src_masks) # (3,1,256,256)
         # get focal, dice and iou loss on all output masks in a prediction step
-        class_weights = torch.tensor([1.0, 5.0, 10.0, 10.0])
+        class_weights = torch.tensor([1.0, 5.0, 20.0, 20.0])
 
         # if mode == 'val':
         #     src_masks, _ = torch.max(src_masks, dim=0, keepdim=True) # (1, 512, 512)
         #     target_masks, _ = torch.max(target_masks, dim=0, keepdim=True) # (1, 512, 512)
 
-        loss_multimask = focal_loss_for_semantic_seg(src_masks, target_masks, alpha=self.focal_alpha, gamma=self.focal_gamma, class_weights=None, reduction='mean')
+        loss_multimask = focal_loss_for_semantic_seg(src_masks, target_masks, alpha=self.focal_alpha, gamma=self.focal_gamma, class_weights=class_weights, reduction='mean')
         # loss_multimask = focal_loss_for_semantic_seg(src_masks.transpose(0,1).contiguous(), target_masks)
         loss_multidice = dice_loss_semantic_seg(src_masks, target_masks)
         loss_multiiou = iou_loss_for_semantic_seg(src_masks, target_masks)
@@ -551,7 +597,7 @@ class MultiStepMultiMasksAndIous(nn.Module):
                 0.0, dtype=loss_multimask.dtype, device=loss_multimask.device
             )
             target_obj = torch.ones(
-                loss_multimask.shape[0],
+                target_masks.shape[0], # loss_multimask.shape[0], ; changed by bryce 
                 1,
                 dtype=loss_multimask.dtype,
                 device=loss_multimask.device,
@@ -742,7 +788,7 @@ class MultiStepMultiMasksAndIous(nn.Module):
         # 遍历每个子图并绘制
         for i in range(num_images):
             ax = axes[i]
-            img = tensor[i].cpu().numpy()  # 将张量转换为 NumPy 数组
+            img = tensor[i].cpu().detach().numpy()  # 将张量转换为 NumPy 数组
             colored_img = np.zeros((h, w, 3))  # 创建一个 RGB 图像
 
             # 根据类别值填充颜色

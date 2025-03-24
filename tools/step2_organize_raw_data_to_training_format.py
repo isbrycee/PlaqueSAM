@@ -98,6 +98,8 @@ def check_counts(new_folder, folder_prefixes):
 
         images = os.listdir(image_folder)
         jsons = os.listdir(json_folder)
+        if len(jsons) > 8:
+            print("The number of json files exceeds 8 : ", json_folder)
 
         if len(images) != len(jsons):
             print(f"Mismatch in {folder_prefix}: {len(images)} images, {len(jsons)} JSON files.")
@@ -140,10 +142,10 @@ def organize_data(root_dir, new_folder):
 
                         # Open image
                         img_path = os.path.join(images_folder, image)
-                        img = Image.open(img_path)
 
+                        img = Image.open(img_path)
                         # Load corresponding JSON
-                        json_folder = os.path.join(data_path.split(folder)[0], folder+'_post_checked', data_folder.split('.')[0])
+                        json_folder = os.path.join(data_path.split(folder)[0], folder, folder+'_post_checked', data_folder.split('.')[0])
                         json_file = os.path.join(json_folder, f"{image_name}.json")
                         with open(json_file, 'r') as f:
                             data = json.load(f)
@@ -164,6 +166,7 @@ def organize_data(root_dir, new_folder):
                             print("bad images and anno:", img_path)
                         
                         top_left, bottom_right = correct_coordinates(top_left, bottom_right)
+                        # print(img_path)
                         # Crop image
                         cropped_img = img.crop((top_left[0], top_left[1], bottom_right[0], bottom_right[1]))
                         cropped_img_path = os.path.join(new_save_folder, new_image_name)
@@ -197,13 +200,20 @@ def organize_data(root_dir, new_folder):
 root_directories = ['/home/jinghao/projects/dental_plague_detection/dataset/27_1_2025_revision/12_5/',
                     '/home/jinghao/projects/dental_plague_detection/dataset/27_1_2025_revision/9_26/' ]
 
-save_root_path = '/home/jinghao/projects/dental_plague_detection/dataset/plague_for_training_revised_15_2_1/'
+save_root_path = '/home/jinghao/projects/dental_plague_detection/dataset/2025_revised_for_training_all_bak'
 
-root_directories = ['/home/jinghao/projects/dental_plague_detection/dataset/15_2_2025_revision_1']
+# root_directories = ['/home/jinghao/projects/dental_plague_detection/dataset/revised_0225/1111']
 
+root_directories = "/home/jinghao/projects/dental_plague_detection/dataset/2025_revised_all_add_blur_imgs_bak/"
+# root_directories = ["/home/jinghao/projects/dental_plague_detection/dataset/revised_0225/10_10",  ]
+date = ['9_26', '10_8/', '10_10', '10_24', '10_31', '11_3', '11_7', '11_12', '11_19', '11_20' , '12_3', '12_5']
 
-for root_dir in root_directories:
-    organize_data(root_dir, save_root_path)
+for root_dir in date:
+    single_path = os.path.join(root_directories, root_dir)
+    organize_data(single_path, save_root_path)
+    
+# for root_dir in root_directories:
+#     organize_data(root_dir, save_root_path)
 
 # for convert json into png mask
 for json_folder in tqdm(os.listdir(os.path.join(save_root_path, 'Json'))):

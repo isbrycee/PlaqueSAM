@@ -234,9 +234,9 @@ class SAM2Base(torch.nn.Module):
         self.sam_mask_decoder = MaskDecoder(
             num_multimask_outputs=num_multimask_outputs,
             transformer=TwoWayTransformer(
-                depth=2,
+                depth=2, # 2 -> 9 ; changed by bryce
                 embedding_dim=self.sam_prompt_embed_dim,
-                mlp_dim=2048,
+                mlp_dim=2048,   
                 num_heads=8,
             ),
             transformer_dim=self.sam_prompt_embed_dim,
@@ -328,7 +328,9 @@ class SAM2Base(torch.nn.Module):
             # If no points are provide, pad with an empty point (with label -1)
             sam_point_coords = torch.zeros(B, 1, 2, device=device)
             sam_point_labels = -torch.ones(B, 1, dtype=torch.int32, device=device)
-
+        
+        # add by bryce
+        mask_inputs = point_inputs['box_masks'].unsqueeze(1)
         # b) Handle mask prompts
         if mask_inputs is not None:
             # If mask_inputs is provided, downsize it into low-res mask input if needed
@@ -359,6 +361,7 @@ class SAM2Base(torch.nn.Module):
             ious,
             sam_output_tokens,
             object_score_logits,
+            aux_masks_list,
         ) = self.sam_mask_decoder(
             image_embeddings=backbone_features,
             image_pe=self.sam_prompt_encoder.get_dense_pe(),
@@ -390,6 +393,7 @@ class SAM2Base(torch.nn.Module):
         )
 
         sam_output_token = sam_output_tokens[:, 0]
+
         if multimask_output:
             # take the best mask prediction (with the highest IoU estimation)
             best_iou_inds = torch.argmax(ious, dim=-1)
@@ -422,6 +426,7 @@ class SAM2Base(torch.nn.Module):
             high_res_masks, # (1, 1, 256, 256)
             obj_ptr, # (1, 256)
             object_score_logits, # (1, 1)
+            aux_masks_list,
         )
 
     def _use_mask_as_output(self, backbone_features, high_res_features, mask_inputs):
@@ -779,6 +784,7 @@ class SAM2Base(torch.nn.Module):
             #     num_frames=num_frames,
             #     track_in_reverse=track_in_reverse,
             # )
+
             # add by bryce
             pix_feat = current_vision_feats[-1].permute(1, 2, 0)
             pix_feat = pix_feat.view(-1, self.hidden_dim, *feat_sizes[-1])

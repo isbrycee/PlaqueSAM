@@ -171,6 +171,7 @@ class Trainer:
         seed_value: int = 123,
         val_epoch_freq: int = 1,
         val_boxes_class_agnostic: bool = False, 
+        val_ins_seg_class_agnostic: bool = False, 
         distributed: Dict[str, bool] = None,
         cuda: Dict[str, bool] = None,
         env_variables: Optional[Dict[str, Any]] = None,
@@ -191,7 +192,9 @@ class Trainer:
         self.mode = mode
         self.val_epoch_freq = val_epoch_freq
         self.best_val_ins_seg_50 = -1
+        self.best_val_box_map_50 = -1
         self.val_boxes_class_agnostic = val_boxes_class_agnostic
+        self.val_ins_seg_class_agnostic = val_ins_seg_class_agnostic
         self.optim_conf = OptimConf(**optim) if optim is not None else None
         self.meters_conf = meters
         self.loss_conf = loss
@@ -561,6 +564,23 @@ class Trainer:
         return pred_masks_for_eval, gt_masks_for_eval
 
 
+    # def _get_pred_masks_info_for_evaluate_semantic_seg_MaskDINO(self, outputs_for_masks, gt_for_masks, use_one_box_per_prompt, threshold_for_masks):
+    #     masks_pred_list = []
+    #     for pred_mask_logits in outputs_for_masks:
+    #         pred_mask_logits = pred_mask_logits['multistep_pred_multimasks_high_res'][0][:, :-1]
+    #         # 沿着类别通道维度（dim=1）找到最大索引
+    #         pred_mask = (pred_mask_logits > threshold_for_masks).int()
+    #         if use_one_box_per_prompt:
+    #             pred_mask, _ = torch.max(pred_mask, dim=0, keepdim=True)
+    #         # self.visualize_semantic_segmentation(pred_mask)
+    #         masks_pred_list.append(pred_mask)
+            
+    #     # for pred
+    #     pred_masks_for_eval = torch.stack(masks_pred_list, dim=0).int()
+
+    #     return pred_masks_for_eval.squeeze(1), gt_for_masks.squeeze(1) # (); (6, 1024, 1024)
+    
+
     def _get_pred_masks_info_for_evaluate_semantic_Seg(self, outputs_for_masks, gt_for_masks, use_one_box_per_prompt):
         masks_pred_list = []
         for pred_mask_logits in outputs_for_masks:
@@ -578,7 +598,6 @@ class Trainer:
         pred_masks_for_eval = torch.stack(masks_pred_list, dim=0).int()
 
         return pred_masks_for_eval.squeeze(1), gt_for_masks.squeeze(1) # (); (6, 1024, 1024)
-    
 
     def _get_pred_boxes_info_for_evaluate(self, outputs_for_boxes, gt_for_boxes, score_threshod=0.5):
         
@@ -586,7 +605,7 @@ class Trainer:
         #                         'pred_boxes': outputs_for_boxes['box_decoder_pred_boxes']}
         device = outputs_for_boxes['pred_logits'].device
         target_sizes = torch.tensor((self.model_conf.image_size, self.model_conf.image_size)).repeat((len(outputs_for_boxes['pred_logits']), 1)).to(device)
-        Boxes_Decoder_PostProcess = PostProcess()
+        Boxes_Decoder_PostProcess = PostProcess(self.model_conf.box_decoder_max_num_select, self.model_conf.box_decoder_postprocess_nms_iou_threshold) # 0.75
         results = Boxes_Decoder_PostProcess(outputs_for_boxes, target_sizes=target_sizes, not_to_xyxy=False, test=False)
         
         pred_boxes_per_frame = []
@@ -630,13 +649,10 @@ class Trainer:
         phase: str,
     ):
         outputs, outputs_for_boxes, output_for_two_stage, pred_image_classifiy_logits, pred_image_classify_processed, indices_to_reserve, valid_box_mask_pairs = model(batch, phase)
-
-
-        use_one_box_per_prompt = True
-
         targets = batch.masks[indices_to_reserve] # (6, 3, 256, 256)
         targets_for_semantic_seg = batch.masks_for_semantic_seg[indices_to_reserve].to(torch.int64)
         targets_for_semantic_seg_per_box_prompt = [batch.box_mask_pairs[ids] for ids in indices_to_reserve]
+        
         # for visualize gt mask
         # import matplotlib.pyplot as plt
         # ================================ for visual gt ================================
@@ -644,7 +660,7 @@ class Trainer:
         # tensor_np = draw_Data.reshape(-1, self.model_conf.image_size, self.model_conf.image_size).cpu().detach().numpy()  # 转换为(18, 256, 256)
 
         # ================================ for visual pred ================================
-        draw_Data = torch.argmax(outputs[0]['multistep_pred_multimasks_high_res'][0], dim=1).int()
+        # draw_Data = torch.argmax(outputs[0]['multistep_pred_multimasks_high_res'][0], dim=1).int()
         # torch.max(pred_mask, dim=0, keepdim=True)
 
         # draw_Data = torch.where((draw_Data > 0.5).to(float)==1, 255, 0)
@@ -674,6 +690,7 @@ class Trainer:
         device = targets.device
         key = batch.dict_key  # key for dataset
         # loss = self.loss[key](outputs, targets)
+
         if self.model_conf.use_one_box_per_prompt:
             loss = self.loss[key](outputs, targets_for_semantic_seg_per_box_prompt, use_one_box_per_prompt=True, mode=phase) # add by bryce
         else:
@@ -760,7 +777,9 @@ class Trainer:
             # plt.close()  # 关闭绘图窗口
             ############## end for box vis, check box ###################
             # preds_masks, targets_masks = self._get_pred_masks_info_for_evaluate(outputs, targets, self.model_conf.threshold_for_masks)
+            
             preds_masks, targets_masks = self._get_pred_masks_info_for_evaluate_semantic_Seg(outputs, targets_for_semantic_seg, self.model_conf.use_one_box_per_prompt)
+            # preds_masks, targets_masks = self._get_pred_masks_info_for_evaluate_semantic_seg_MaskDINO(outputs, targets_for_semantic_seg, self.model_conf.use_one_box_per_prompt, self.model_conf.threshold_for_masks)
 
             preds_classes, targets_classes = self._get_pred_classification_info_for_evaluate(pred_image_classify_processed, targets_image_classify)
         # 
@@ -775,29 +794,56 @@ class Trainer:
             step_losses.update(
                 {f"Losses/{phase}_{key}_{k}": v for k, v in loss.items()}
             )
-            loss = self._log_loss_detailed_and_return_core_loss(
+
+            # if not self.epoch >= self.max_epochs:
+            #     # seg loss
+            #     loss = self._log_loss_detailed_and_return_core_loss(
+            #         loss, loss_log_str, self.steps[phase]
+            #     )
+            # elif not self.epoch < self.max_epochs:
+            #     # add by bryce; box loss
+            #     loss = 0.0
+            #     loss = self._add_boxes_loss_into_core_loss(
+            #         loss, loss_boxes, aux_loss_boxes_list, loss_interm_boxes, loss_log_str, self.steps[phase]
+            #     )
+            #     # add by bryce; image loss
+            #     loss = self._add_image_classify_loss_into_core_loss(
+            #         loss, loss_image_classify, loss_log_str, self.steps[phase]
+            #     )
+
+            # for computing all loss; 
+            # seg loss
+            seg_loss = self._log_loss_detailed_and_return_core_loss(
                 loss, loss_log_str, self.steps[phase]
             )
+            # add by bryce; box loss
+            box_loss = self._add_boxes_loss_into_core_loss(
+                device, loss_boxes, aux_loss_boxes_list, loss_interm_boxes, loss_log_str, self.steps[phase]
+            )
+            # add by bryce; image loss
+            image_cls_loss = self._add_image_classify_loss_into_core_loss(
+                device, loss_image_classify, loss_log_str, self.steps[phase]
+            )
 
-            # add by bryce
-            loss = self._add_boxes_loss_into_core_loss(
-                loss, loss_boxes, aux_loss_boxes_list, loss_interm_boxes, loss_log_str, self.steps[phase]
-            )
-            loss = self._add_image_classify_loss_into_core_loss(
-                loss, loss_image_classify, loss_log_str, self.steps[phase]
-            )
+            if self.model_conf.train_stage == '1st':
+                loss_all = box_loss + image_cls_loss
+            elif self.model_conf.train_stage == '2nd':
+                loss_all = seg_loss
+            else: 
+                loss_all = seg_loss + box_loss + image_cls_loss
+
+            # loss_all = seg_loss + box_loss + image_cls_loss
             # end
-
         if self.steps[phase] % self.logging_conf.log_scalar_frequency == 0:
             self.logger.log(
                 loss_log_str,
-                loss,
+                loss_all,
                 self.steps[phase],
             )
 
         self.steps[phase] += 1
 
-        ret_tuple = {loss_str: loss}, batch_size, step_losses
+        ret_tuple = {loss_str: loss_all}, batch_size, step_losses
 
         if phase in self.meters and key in self.meters[phase]:
             meters_dict = self.meters[phase][key]
@@ -807,10 +853,16 @@ class Trainer:
                         find_stages=outputs,
                         find_metadatas=batch.metadata,
                     )
+
+        del targets
+        del targets_for_semantic_seg
+        del targets_for_semantic_seg_per_box_prompt
+        torch.cuda.empty_cache()
+       
         if phase == 'train':
             return ret_tuple
         elif phase == 'val':
-            return ret_tuple, preds_boxes, targets_boxes, preds_masks, targets_masks, preds_classes, targets_classes, indices_to_reserve, outputs, valid_box_mask_pairs
+            return ret_tuple, preds_boxes, targets_boxes, preds_masks, targets_masks, preds_classes, targets_classes, indices_to_reserve, outputs, valid_box_mask_pairs, outputs_for_boxes['init_cond_frames']
 
     def run(self):
         assert self.mode in ["train", "train_only", "val"]
@@ -823,6 +875,23 @@ class Trainer:
                     self.epoch -= 1
                     self.run_val()
                     self.epoch += 1
+        
+            # add by bryce; for seperate training; twostage
+            mask_decoder_related_params = ['sam_prompt_encoder', 'sam_mask_decoder', 'obj_ptr_tpos_proj', \
+                                           'maskmem_tpos_enc', 'no_mem_embed', 'no_mem_pos_enc', 'no_obj_ptr', \
+                                           'no_obj_embed_spatial', 'mask_downsample', 'obj_ptr_proj', ]
+            if self.model_conf.train_stage == '1st':
+                # 冻结mask decoder，解冻其他参数
+                for name, param in self.model.named_parameters():
+                    param.requires_grad = all(s not in name for s in mask_decoder_related_params)
+            elif self.model_conf.train_stage == '2nd':
+                # 解冻mask decoder，冻结其他参数
+                for name, param in self.model.named_parameters():
+                    param.requires_grad = any(s in name for s in mask_decoder_related_params)
+            else:
+                for name, param in self.model.named_parameters():
+                    param.requires_grad = True
+
             self.run_train()
             self.run_val()
         elif self.mode == "val":
@@ -834,8 +903,15 @@ class Trainer:
         start_time = time.time()  
         self.train_dataset = None
         self.val_dataset = None
-
-        if self.mode in ["train", "val"]:
+        if self.mode in ["val"]:
+            self.val_dataset = instantiate(self.data_conf.get(Phase.VAL, None))
+            # add by bryce
+            self.train_dataset = None
+            elapsed_time = time.time() - start_time 
+            print(f"The time for loading datasets: {elapsed_time:.2f} s")
+            return
+        
+        if self.mode in ["train"]:
             self.val_dataset = instantiate(self.data_conf.get(Phase.VAL, None))
             # add by bryce
             self.train_dataset = instantiate(self.data_conf.train)
@@ -939,14 +1015,15 @@ class Trainer:
 
         end = time.time()
         # add by bryce 
-        map_calculator = MAPCalculator(class_agnostic=self.val_boxes_class_agnostic)
+        BoxmAP_calculator = MAPCalculator(class_agnostic=self.val_boxes_class_agnostic)
         # +1 for background
         mIoU_calculator = MulticlassJaccardIndex(num_classes=self.model_conf.num_classes_for_mask+1, average=None, ignore_index=0).to(self.device)
         accuracy_calculator = Accuracy(task="multiclass", num_classes=self.model_conf.image_classify_decoder.num_classes).to(self.device)
         MaskmAP_calculator = InstanceSegmentationMetric(num_box_classes=30, num_mask_classes=self.model_conf.num_classes_for_mask, device=self.device)
 
         gt_json_path = self.data_conf.val.datasets[0].dataset.datasets[0].video_dataset.gt_ins_seg_json
-        Ins_Seg_postprocessor = Postprocessor_for_Instance_Segmentation(gt_json_path, self.model_conf.num_classes_for_mask, self.logging_conf.saved_jsons_dir, device=self.device)
+        Ins_Seg_postprocessor = Postprocessor_for_Instance_Segmentation(gt_json_path, self.model_conf.num_classes_for_mask, self.logging_conf.saved_jsons_dir, \
+                                                                        self.val_ins_seg_class_agnostic, device=self.device)
 
         for data_iter, batch in enumerate(val_loader):
             # measure data loading time
@@ -965,12 +1042,13 @@ class Trainer:
                 ):
                     for phase, model in zip(curr_phases, curr_models):
                         ret_tuple, preds_boxes, targets_boxes, preds_masks, targets_masks, preds_classes, \
-                        targets_classes, indices_to_reserve, outputs, valid_box_mask_pairs = self._step(
+                        targets_classes, indices_to_reserve, outputs, valid_box_mask_pairs, init_cond_frames = self._step(
                             batch,
                             model,
                             phase,
                         )
-                        map_calculator.update(preds_boxes, targets_boxes) # add by bryce for compute box mAP
+                        indices_to_reserve_for_visual = [i for i, value in enumerate(batch.image_classify) if value != 6]
+                        BoxmAP_calculator.update(preds_boxes, targets_boxes, batch.img_batch[indices_to_reserve_for_visual], batch.metadata.video_name, is_visualized=True) # add by bryce for compute box mAP
                         mIoU_calculator.update(preds_masks, targets_masks) # add by bryce for compute mIoU
                         # if not torch.equal(preds_classes, targets_classes):
                         #     print(batch.metadata.video_name)
@@ -978,7 +1056,7 @@ class Trainer:
                         #     print('target:', targets_classes)
                         accuracy_calculator.update(preds_classes, targets_classes) # add by bryce for compute image classification accuracy
                         MaskmAP_calculator.update(preds_boxes, targets_boxes, preds_masks, targets_masks)
-                        Ins_Seg_postprocessor.update(indices_to_reserve, outputs, valid_box_mask_pairs, batch.metadata.video_name)
+                        Ins_Seg_postprocessor.update(indices_to_reserve, outputs, valid_box_mask_pairs, batch.img_batch[indices_to_reserve_for_visual], batch.metadata.video_name, is_visualized=False)
 
 
                         loss_dict, batch_size, extra_losses = ret_tuple
@@ -1040,7 +1118,7 @@ class Trainer:
         classification_acc_results = accuracy_calculator.compute()
         logging.info(f"Image Classification ACC Results: {classification_acc_results}")
         # add by bryce; for Metrics logging; for compute mAP
-        box_mAP_results = map_calculator.compute()
+        box_mAP_results = BoxmAP_calculator.compute()
         logging.info(f"Object Detection mAP Results: {box_mAP_results}")
         # add by bryce; for Metrics logging; 计算平均 IoU（mIoU）
         mask_mIoU_results_per_class = mIoU_calculator.compute()
@@ -1076,6 +1154,12 @@ class Trainer:
         logging.info(data_row2)
         logging.info(separator2)
         
+
+        if box_mAP_results['map_50'] > self.best_val_box_map_50:
+            self.best_val_box_map_50 = box_mAP_results['map_50']
+            self.save_checkpoint(self.epoch + 1, ['best_box_map50'])
+            logging.info(f"Best checkpoint has been saved in epoch {self.epoch}. The current best box detection map_50 is : {self.best_val_box_map_50}")
+
 
         # save ckp; add by bryce
         if ins_seg_metrics['AP50'] > self.best_val_ins_seg_50:
@@ -1127,6 +1211,10 @@ class Trainer:
         # Model training loop
         self.model.train()
         end = time.time()
+
+        # for name, param in self.model.named_parameters():
+        #     print(name)
+        #     print(param.requires_grad)
 
         for data_iter, batch in enumerate(train_loader):
             # measure data loading time
@@ -1249,7 +1337,9 @@ class Trainer:
         # grads will also update a model even if the step doesn't produce
         # gradients
         self.optim.zero_grad(set_to_none=True)
+
         # print(batch.metadata.video_name)
+
         with torch.cuda.amp.autocast(
             enabled=self.optim_conf.amp.enabled,
             dtype=get_amp_type(self.optim_conf.amp.amp_dtype),
@@ -1263,7 +1353,7 @@ class Trainer:
         assert len(loss_dict) == 1
         loss_key, loss = loss_dict.popitem()
         
-        print(loss)
+        # print(loss)
 
         if not math.isfinite(loss.item()):
             error_msg = f"Loss is {loss.item()}, attempting to stop training"
@@ -1273,7 +1363,8 @@ class Trainer:
             else:
                 return
 
-        self.scaler.scale(loss).backward()
+        self.scaler.scale(loss).backward(retain_graph=True) # retain_graph=True
+        
         loss_mts[loss_key].update(loss.item(), batch_size)
         for extra_loss_key, extra_loss in extra_losses.items():
             if extra_loss_key not in extra_loss_mts:
@@ -1281,6 +1372,8 @@ class Trainer:
                     extra_loss_key, self.device, ":.2e"
                 )
             extra_loss_mts[extra_loss_key].update(extra_loss.item(), batch_size)
+
+        torch.cuda.empty_cache()
 
     def _log_meters_and_save_best_ckpts(self, phases: List[str]):
         logging.info("Synchronizing meters")
@@ -1435,8 +1528,8 @@ class Trainer:
         return core_loss
 
     # add by bryce
-    def _add_boxes_loss_into_core_loss(self, loss, loss_boxes, aux_loss_boxes_list, loss_interm_boxes, loss_str, step):
-        core_loss = loss
+    def _add_boxes_loss_into_core_loss(self, device, loss_boxes, aux_loss_boxes_list, loss_interm_boxes, loss_str, step):
+        core_loss = torch.tensor(0.0, device=device)
         
         for k, v in loss_boxes.items():
             new_key = k.split('_')[0] + '_boxes_' + k.split('_')[1]
@@ -1467,9 +1560,9 @@ class Trainer:
     # end 
 
     # add by bryce
-    def _add_image_classify_loss_into_core_loss(self, loss, loss_image_classify, loss_str, step):
-        core_loss = loss
-
+    def _add_image_classify_loss_into_core_loss(self, device, loss_image_classify, loss_str, step):
+        # core_loss = loss
+        core_loss = torch.tensor(0.0, device=device)
         for k, v in loss_image_classify.items():
             if 'error' in k:
                 continue

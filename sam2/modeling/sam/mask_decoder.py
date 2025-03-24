@@ -54,7 +54,7 @@ class MaskDecoder(nn.Module):
         self.num_multimask_outputs = num_multimask_outputs
         
         self.iou_token = nn.Embedding(1, transformer_dim)
-        self.num_mask_tokens = num_multimask_outputs + 1
+        self.num_mask_tokens = num_multimask_outputs # + 1
         self.mask_tokens = nn.Embedding(self.num_mask_tokens, transformer_dim)
 
         self.pred_obj_scores = pred_obj_scores
@@ -64,27 +64,33 @@ class MaskDecoder(nn.Module):
 
         self.output_upscaling = nn.Sequential(
             nn.ConvTranspose2d(
-                transformer_dim, transformer_dim // 4, kernel_size=2, stride=2
+                transformer_dim, transformer_dim, kernel_size=2, stride=2 # changed by bryce; remove ' // 4 '
+                # transformer_dim, transformer_dim // 4, kernel_size=2, stride=2
             ),
-            LayerNorm2d(transformer_dim // 4),
+            # LayerNorm2d(transformer_dim // 4),
+            LayerNorm2d(transformer_dim),# changed by bryce; remove ' // 4 '
             activation(),
             nn.ConvTranspose2d(
-                transformer_dim // 4, transformer_dim // 8, kernel_size=2, stride=2
+                transformer_dim, transformer_dim, kernel_size=2, stride=2 # changed by bryce; remove ' // 8 ' ' // 4 '
+                # transformer_dim // 4, transformer_dim // 8, kernel_size=2, stride=2 
             ),
             activation(),
         )
         self.use_high_res_features = use_high_res_features
         if use_high_res_features:
             self.conv_s0 = nn.Conv2d(
-                transformer_dim, transformer_dim // 8, kernel_size=1, stride=1
+                transformer_dim, transformer_dim, kernel_size=1, stride=1 # changed by bryce; remove ' // 8 '
+                # transformer_dim, transformer_dim // 8, kernel_size=1, stride=1 
             )
             self.conv_s1 = nn.Conv2d(
-                transformer_dim, transformer_dim // 4, kernel_size=1, stride=1
+                transformer_dim, transformer_dim, kernel_size=1, stride=1 # changed by bryce; remove ' // 4 '
+                # transformer_dim, transformer_dim // 4 , kernel_size=1, stride=1
             )
 
         self.output_hypernetworks_mlps = nn.ModuleList(
             [
-                MLP(transformer_dim, transformer_dim, transformer_dim // 8, 3)
+                # MLP(transformer_dim, transformer_dim, transformer_dim // 8, 3)
+                MLP(transformer_dim, transformer_dim, transformer_dim, 3) # changed by bryce; remove ' // 8 '
                 for i in range(self.num_mask_tokens)
             ]
         )
@@ -106,6 +112,8 @@ class MaskDecoder(nn.Module):
         self.dynamic_multimask_via_stability = dynamic_multimask_via_stability
         self.dynamic_multimask_stability_delta = dynamic_multimask_stability_delta
         self.dynamic_multimask_stability_thresh = dynamic_multimask_stability_thresh
+
+        self.norm_for_aux = nn.LayerNorm(transformer_dim)
 
     def forward(
         self,
@@ -133,7 +141,7 @@ class MaskDecoder(nn.Module):
           torch.Tensor: batched predictions of mask quality
           torch.Tensor: batched SAM token for mask output
         """
-        masks, iou_pred, mask_tokens_out, object_score_logits = self.predict_masks(
+        masks, iou_pred, mask_tokens_out, object_score_logits, aux_masks_list = self.predict_masks(
             image_embeddings=image_embeddings, # (num_objs, 256, 32, 32)
             image_pe=image_pe, # (1, 256, 32, 32)
             sparse_prompt_embeddings=sparse_prompt_embeddings, # (4, 12 ,256)
@@ -148,7 +156,7 @@ class MaskDecoder(nn.Module):
             iou_pred = iou_pred[:, :] # iou_pred = iou_pred[:, 1:]; changed by bryce
         elif self.dynamic_multimask_via_stability and not self.training:
             masks, iou_pred = self._dynamic_multimask_via_stability(masks, iou_pred)
-        else: # here
+        else:
             masks = masks[:, 0:1, :, :] # (3, 1, 256, 256)
             iou_pred = iou_pred[:, 0:1]
 
@@ -163,7 +171,45 @@ class MaskDecoder(nn.Module):
             sam_tokens_out = mask_tokens_out[:, 0:1]  # [b, 1, c] shape
 
         # Prepare output
-        return masks, iou_pred, sam_tokens_out, object_score_logits
+        return masks, iou_pred, sam_tokens_out, object_score_logits, aux_masks_list
+
+    def forward_prediction_heads(self, hs, src, s, high_res_features, feat_shape, is_aux_mask=False):
+        if is_aux_mask:
+            hs = self.norm_for_aux(hs)
+        iou_token_out = hs[:, s, :] # s=1
+        mask_tokens_out = hs[:, s + 1 : (s + 1 + self.num_mask_tokens), :] # (3, 4, 256)
+        b, c, h, w = feat_shape
+        # Upscale mask embeddings and predict masks using the mask tokens
+        src = src.transpose(1, 2).view(b, c, h, w) # (3, 256, 16, 16)
+        if not self.use_high_res_features:
+            upscaled_embedding = self.output_upscaling(src)
+        else:
+            dc1, ln1, act1, dc2, act2 = self.output_upscaling
+            feat_s0, feat_s1 = high_res_features
+            upscaled_embedding = act1(ln1(dc1(src) + feat_s1))
+            upscaled_embedding = act2(dc2(upscaled_embedding) + feat_s0) # (3, 32, 64, 64)
+
+        hyper_in_list: List[torch.Tensor] = []
+        for i in range(self.num_mask_tokens):
+            hyper_in_list.append(
+                self.output_hypernetworks_mlps[i](mask_tokens_out[:, i, :]) # (4, 1, 256); 4 objs, 1 masks
+            )
+        hyper_in = torch.stack(hyper_in_list, dim=1) # (6, 4, 32) ; 6 objs, 4 masks
+        b, c, h, w = upscaled_embedding.shape
+        masks = (hyper_in @ upscaled_embedding.view(b, c, h * w)).view(b, -1, h, w) # (3, 4, 256, 256); three classes; four masks for each class
+
+        # Generate mask quality predictions
+        iou_pred = self.iou_prediction_head(iou_token_out) # (3, 4) for quality 
+        if self.pred_obj_scores:
+            assert s == 1
+            object_score_logits = self.pred_obj_score_head(hs[:, 0, :]) # (3, 1) for categories
+        else:
+            # Obj scores logits - default to 10.0, i.e. assuming the object is present, sigmoid(10)=1
+            object_score_logits = 10.0 * iou_pred.new_ones(iou_pred.shape[0], 1)
+
+        del upscaled_embedding
+
+        return masks, iou_pred, mask_tokens_out, object_score_logits
 
     def predict_masks(
         self,
@@ -207,42 +253,105 @@ class MaskDecoder(nn.Module):
             image_pe.size(0) == 1
         ), "image_pe should have size 1 in batch dim (from `get_dense_pe()`)"
         pos_src = torch.repeat_interleave(image_pe, tokens.shape[0], dim=0)
-        b, c, h, w = src.shape
 
+        feat_shape = src.shape
+        # src: (6, 256, 64, 64)
+        # pos_src: (6, 256, 64, 64)
+        # tokens: (6, 7, 256)
         # Run the transformer
-        hs, src = self.transformer(src, pos_src, tokens) # (4, 18, 256); (4, 4096, 256)
-        iou_token_out = hs[:, s, :] # s=1
-        mask_tokens_out = hs[:, s + 1 : (s + 1 + self.num_mask_tokens), :] # (3, 4, 256)
+        hs, src, aux_queries_list, aux_keys_list = self.transformer(src, pos_src, tokens)
+        # hs: (6, 7, 256)
+        # src: (6, 4096, 256)
 
-        # Upscale mask embeddings and predict masks using the mask tokens
-        src = src.transpose(1, 2).view(b, c, h, w) # (3, 256, 16, 16)
-        if not self.use_high_res_features:
-            upscaled_embedding = self.output_upscaling(src)
-        else:
-            dc1, ln1, act1, dc2, act2 = self.output_upscaling
-            feat_s0, feat_s1 = high_res_features
-            upscaled_embedding = act1(ln1(dc1(src) + feat_s1))
-            upscaled_embedding = act2(dc2(upscaled_embedding) + feat_s0) # (3, 32, 64, 64)
+        masks, iou_pred, mask_tokens_out, object_score_logits = self.forward_prediction_heads(hs, src, s, high_res_features, feat_shape, is_aux_mask=False)
 
-        hyper_in_list: List[torch.Tensor] = []
-        for i in range(self.num_mask_tokens):
-            hyper_in_list.append(
-                self.output_hypernetworks_mlps[i](mask_tokens_out[:, i, :]) # (4, 1, 256); 4 objs, 1 masks
-            )
-        hyper_in = torch.stack(hyper_in_list, dim=1) # (4, 4, 32) ; 4 objs, 4 masks
-        b, c, h, w = upscaled_embedding.shape
-        masks = (hyper_in @ upscaled_embedding.view(b, c, h * w)).view(b, -1, h, w) # (3, 4, 256, 256); three classes; four masks for each class
+        aux_masks_list = []
+        for aux_hs, aux_src in zip(aux_queries_list, aux_keys_list):
+            aux_masks, _, _, _ = self.forward_prediction_heads(aux_hs, aux_src, s, high_res_features, feat_shape, is_aux_mask=True)
+            aux_masks_list.append(aux_masks.float())
+    
+        return masks, iou_pred, mask_tokens_out, object_score_logits, aux_masks_list
 
-        # Generate mask quality predictions
-        iou_pred = self.iou_prediction_head(iou_token_out) # (3, 4) for quality 
-        if self.pred_obj_scores:
-            assert s == 1
-            object_score_logits = self.pred_obj_score_head(hs[:, 0, :]) # (3, 1) for categories
-        else:
-            # Obj scores logits - default to 10.0, i.e. assuming the object is present, sigmoid(10)=1
-            object_score_logits = 10.0 * iou_pred.new_ones(iou_pred.shape[0], 1)
+    # def predict_masks(
+    #     self,
+    #     image_embeddings: torch.Tensor,
+    #     image_pe: torch.Tensor,
+    #     sparse_prompt_embeddings: torch.Tensor,
+    #     dense_prompt_embeddings: torch.Tensor,
+    #     repeat_image: bool,
+    #     high_res_features: Optional[List[torch.Tensor]] = None,
+    # ) -> Tuple[torch.Tensor, torch.Tensor]:
+    #     """Predicts masks. See 'forward' for more details."""
+    #     # Concatenate output tokens
+    #     s = 0
+    #     if self.pred_obj_scores:
+    #         output_tokens = torch.cat( # [6, 256]
+    #             [
+    #                 self.obj_score_token.weight,
+    #                 self.iou_token.weight,
+    #                 self.mask_tokens.weight,
+    #             ],
+    #             dim=0,
+    #         )
+    #         s = 1
+    #     else:
+    #         output_tokens = torch.cat(
+    #             [self.iou_token.weight, self.mask_tokens.weight], dim=0
+    #         )
+    #     output_tokens = output_tokens.unsqueeze(0).expand(
+    #         sparse_prompt_embeddings.size(0), -1, -1
+    #     )
+    #     tokens = torch.cat((output_tokens, sparse_prompt_embeddings), dim=1) # [3, 18(6+12), 256]
+        
+    #     # Expand per-image data in batch direction to be per-mask
+    #     if repeat_image:
+    #         src = torch.repeat_interleave(image_embeddings, tokens.shape[0], dim=0)
+    #     else:
+    #         assert image_embeddings.shape[0] == tokens.shape[0]
+    #         src = image_embeddings
+    #     src = src + dense_prompt_embeddings
+    #     assert (
+    #         image_pe.size(0) == 1
+    #     ), "image_pe should have size 1 in batch dim (from `get_dense_pe()`)"
+    #     pos_src = torch.repeat_interleave(image_pe, tokens.shape[0], dim=0)
+    #     b, c, h, w = src.shape
 
-        return masks, iou_pred, mask_tokens_out, object_score_logits
+    #     # Run the transformer
+    #     hs, src = self.transformer(src, pos_src, tokens) # (4, 18, 256); (4, 4096, 256)
+        
+    #     iou_token_out = hs[:, s, :] # s=1
+    #     mask_tokens_out = hs[:, s + 1 : (s + 1 + self.num_mask_tokens), :] # (3, 4, 256)
+
+    #     # Upscale mask embeddings and predict masks using the mask tokens
+    #     src = src.transpose(1, 2).view(b, c, h, w) # (3, 256, 16, 16)
+    #     if not self.use_high_res_features:
+    #         upscaled_embedding = self.output_upscaling(src)
+    #     else:
+    #         dc1, ln1, act1, dc2, act2 = self.output_upscaling
+    #         feat_s0, feat_s1 = high_res_features
+    #         upscaled_embedding = act1(ln1(dc1(src) + feat_s1))
+    #         upscaled_embedding = act2(dc2(upscaled_embedding) + feat_s0) # (3, 32, 64, 64)
+
+    #     hyper_in_list: List[torch.Tensor] = []
+    #     for i in range(self.num_mask_tokens):
+    #         hyper_in_list.append(
+    #             self.output_hypernetworks_mlps[i](mask_tokens_out[:, i, :]) # (4, 1, 256); 4 objs, 1 masks
+    #         )
+    #     hyper_in = torch.stack(hyper_in_list, dim=1) # (4, 4, 32) ; 4 objs, 4 masks
+    #     b, c, h, w = upscaled_embedding.shape
+    #     masks = (hyper_in @ upscaled_embedding.view(b, c, h * w)).view(b, -1, h, w) # (3, 4, 256, 256); three classes; four masks for each class
+
+    #     # Generate mask quality predictions
+    #     iou_pred = self.iou_prediction_head(iou_token_out) # (3, 4) for quality 
+    #     if self.pred_obj_scores:
+    #         assert s == 1
+    #         object_score_logits = self.pred_obj_score_head(hs[:, 0, :]) # (3, 1) for categories
+    #     else:
+    #         # Obj scores logits - default to 10.0, i.e. assuming the object is present, sigmoid(10)=1
+    #         object_score_logits = 10.0 * iou_pred.new_ones(iou_pred.shape[0], 1)
+
+    #     return masks, iou_pred, mask_tokens_out, object_score_logits
+
 
     def _get_stability_scores(self, mask_logits):
         """

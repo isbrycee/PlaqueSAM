@@ -7,6 +7,11 @@ from pycocotools.cocoeval import COCOeval
 from skimage.measure import find_contours
 import cv2
 
+ # 定义颜色映射，每个类别有一个固定颜色
+np.random.seed(0)  # 确保颜色一致
+num_classes = 90
+global_colors_list = np.random.randint(0, 255, (num_classes, 3))  # 生成 90 个随机颜色
+
 def calculate_and_visualize_map(gt_json_path, pred_json_path, image_dir, output_dir):
     """
     计算mAP并可视化GT和预测的mask
@@ -25,6 +30,12 @@ def calculate_and_visualize_map(gt_json_path, pred_json_path, image_dir, output_
     coco_gt = COCO(gt_json_path)
     coco_pred = coco_gt.loadRes(pred_json_path)
     
+    # if True:
+    #     for ann in coco_pred.dataset['annotations']:
+    #         ann['category_id'] = 1  # 将所有类别 ID 设置为 1
+    #     for ann in coco_gt.dataset['annotations']:
+    #         ann['category_id'] = 1  # 将所有类别 ID 设置为 1
+
     # 计算mAP
     coco_eval = COCOeval(coco_gt, coco_pred, 'segm')
     coco_eval.evaluate()
@@ -55,12 +66,14 @@ def calculate_and_visualize_map(gt_json_path, pred_json_path, image_dir, output_
         print('img_shape:', img.shape)
         # 绘制GT mask
         ann_ids = coco_gt.getAnnIds(imgIds=image_id)
-        print('anno_ids:', ann_ids)
+        # print('anno_ids:', ann_ids)
         annotations = coco_gt.loadAnns(ann_ids)
         for ann in annotations:
             mask = coco_gt.annToMask(ann)
-            color = np.random.rand(3) * 255  # 随机颜色
-            print('mask_shape:', mask.shape)
+            category_id = ann['category_id']
+            color = global_colors_list[category_id % num_classes]  # 从颜色表中选择颜色
+            # color = np.random.rand(3) * 255  # 随机颜色
+            # print('mask_shape:', mask.shape)
             overlay[mask == 1] = color
             contours = find_contours(mask, 0.5)
             for contour in contours:
@@ -74,10 +87,12 @@ def calculate_and_visualize_map(gt_json_path, pred_json_path, image_dir, output_
         annotations = coco_pred.loadAnns(ann_ids)
         for ann in annotations:
             mask = coco_pred.annToMask(ann)
-            color = np.array([1.0, 0.0, 0.0])  # 红色表示预测
+            # color = np.array([1.0, 0.0, 0.0])  # 红色表示预测
+            category_id = ann['category_id']
+            color = global_colors_list[category_id % num_classes]  # 使用与 GT 相同类别的颜色
             contours = find_contours(mask, 0.5)
             for contour in contours:
-                plt.plot(contour[:, 1], contour[:, 0], linewidth=2, color=color)
+                plt.plot(contour[:, 1], contour[:, 0], linewidth=2, color=color/255)
         plt.title('GT (Random Colors) vs Predictions (Red)')
         
         # 保存结果
@@ -92,8 +107,8 @@ def calculate_and_visualize_map(gt_json_path, pred_json_path, image_dir, output_
 # 使用示例
 if __name__ == "__main__":
     calculate_and_visualize_map(
-        gt_json_path="/home/jinghao/projects/dental_plague_detection/Self-PPD/temp_gt.json",
-        pred_json_path="/home/jinghao/projects/dental_plague_detection/Self-PPD/temp_predictions.json",
-        image_dir="/home/jinghao/projects/dental_plague_detection/dataset/temp_debug/test/JPEGImages",
-        output_dir="/home/jinghao/projects/dental_plague_detection/Self-PPD/ins_seg_output"
+        gt_json_path="/home/jinghao/projects/dental_plague_detection/Self-PPD/logs_tiny_1024_50e_lr1e-4_bblr5e-5_wd_4scales_twostage_100queries_2nd_512/saved_jsons/_gt_val.json",
+        pred_json_path="/home/jinghao/projects/dental_plague_detection/Self-PPD/logs_tiny_1024_50e_lr1e-4_bblr5e-5_wd_4scales_twostage_100queries_test_512/saved_jsons/_pred_val_epoch_063.json",
+        image_dir="/home/jinghao/projects/dental_plague_detection/dataset/2025_revised_for_training_split/test/JPEGImages",
+        output_dir="/home/jinghao/projects/dental_plague_detection/Self-PPD/ins_seg_output_ours"
     )

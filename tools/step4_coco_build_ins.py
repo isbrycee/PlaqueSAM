@@ -7,7 +7,7 @@ from pycocotools import mask as mask_utils
 from tqdm import tqdm
 
 # train or test root, containing the dirs:/JPEGImages, /Annotaions, /Json
-root_dir = "/home/jinghao/projects/dental_plague_detection/dataset/temp_debug/train/"
+root_dir = "/home/jinghao/projects/dental_plague_detection/dataset/2025_revised_for_training_split/train"
 
 images_dir = os.path.join(root_dir, "JPEGImages")
 annotations_dir = os.path.join(root_dir, "Json")

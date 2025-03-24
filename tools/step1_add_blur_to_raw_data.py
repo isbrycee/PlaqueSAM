@@ -17,7 +17,9 @@ def gene_blur_images_and_jsons(image_folder_path, anno_folder_path, min_images=8
     image_folder_list = images
 
     all_jsons = [f for f in os.listdir(anno_folder_path) if os.path.isfile(os.path.join(anno_folder_path, f))]
-
+    num_to_add = 0
+    if len(image_folder_list) > min_images:
+        print(image_folder_path)
     # 检查图像数量是否小于指定数量
     if len(image_folder_list) < min_images:
         # 计算需要补充的图像数量
@@ -64,6 +66,7 @@ def gene_blur_images_and_jsons(image_folder_path, anno_folder_path, min_images=8
             with open(os.path.join(anno_folder_path, 'blur_' + anno_json_file_name),"w") as f_w:
                 json.dump(json_anno, f_w)
 
+    return num_to_add
             # import pdb; pdb.set_trace()
 
 
@@ -78,6 +81,7 @@ def organize_data(root_dir):
     #     os.makedirs(os.path.join(new_folder, subfolder), exist_ok=True)
     annotation_folder_name = ''
     image_folder_name = ''
+    all_num_to_add = 0
     for folder in os.listdir(root_dir):
         if '_post_checked' in folder:
             annotation_folder_name = folder
@@ -109,28 +113,37 @@ def organize_data(root_dir):
                     images = os.listdir(images_folder)
 
                     index = images_folder.rfind(folder)
-                    # if '11_7' in image_folder_name:
-                    #     import pdb; pdb.set_trace()
                     if index != -1:
-                        anno_folder = images_folder[:index] + images_folder[index:].replace(image_folder_name, annotation_folder_name)
+                        # anno_folder = images_folder[:index] + images_folder[index:].replace(image_folder_name, annotation_folder_name)
+                        anno_folder = images_folder[:index] + images_folder[index:].replace(folder, folder+"_post_checked")
                     else:
                         print('get anno folder error !')
                     if '.' in anno_folder:
                         anno_folder = anno_folder.split('.')[0]
+
                     anno_json_files_list = os.listdir(anno_folder)
                     print(images_folder)
                     assert len(images) == len(anno_json_files_list)
 
                     images.sort()
                     anno_json_files_list.sort()
-
-                    gene_blur_images_and_jsons(images_folder, anno_folder)
+                    num_to_add = gene_blur_images_and_jsons(images_folder, anno_folder)
+                    all_num_to_add += num_to_add
+    return all_num_to_add
 
 
 # 输入多个根目录路径
-root_directories = ['/home/jinghao/projects/dental_plague_detection/dataset/15_2_2025_revision/10_8/',
-                    '/home/jinghao/projects/dental_plague_detection/dataset/27_1_2025_revision/9_26/' ]
-# root_directories = ["/home/jinghao/projects/dental_plague_detection/dataset/15_2_2025_revision_1",  ]
-for root_dir in root_directories:
-    # single_path = os.path.join(root_directories, root_dir)
-    organize_data(root_dir)
+# root_directories = ['/home/jinghao/projects/dental_plague_detection/dataset/15_2_2025_revision/10_8/',
+#                     '/home/jinghao/projects/dental_plague_detection/dataset/27_1_2025_revision/9_26/' ]
+root_directories = "/home/jinghao/projects/dental_plague_detection/dataset/2025_revised_all_add_blur_imgs_bak/"
+# root_directories = ["/home/jinghao/projects/dental_plague_detection/dataset/revised_0225/10_10",  ]
+date = [ '9_26', '10_8', '10_10', '10_24', '10_31', '11_3', '11_7', '11_12', '11_19', '11_20', '12_3', '12_5']
+num_add_blur_img = 0
+
+for root_dir in date:
+    single_path = os.path.join(root_directories, root_dir)
+    all_num_to_add = organize_data(single_path)
+    num_add_blur_img += all_num_to_add
+
+
+print(num_add_blur_img)
