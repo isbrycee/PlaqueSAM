@@ -212,7 +212,12 @@ def apply_rotary_enc(
     if repeat_freqs_k:
         r = xk_.shape[-2] // xq_.shape[-2]
         if freqs_cis.is_cuda:
-            freqs_cis = freqs_cis.repeat(*([1] * (freqs_cis.ndim - 2)), r, 1)
+            if r > 0:
+                freqs_cis = freqs_cis.repeat(*([1] * (freqs_cis.ndim - 2)), r, 1)
+            else: # add by bryce; note here !!!
+                # 当 r=0 时，生成一个空张量或采取其他处理方式
+                freqs_cis = freqs_cis[..., :1, :]
+            
         else:
             # torch.repeat on complex numbers may not be supported on non-CUDA devices
             # (freqs_cis has 4 dims and we repeat on dim 2) so we use expand + flatten

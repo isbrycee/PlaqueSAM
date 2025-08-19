@@ -14,7 +14,7 @@ class image_classify_decoder(nn.Module):
         input_dim: int = 768,
         hidden_dim: int = 768,
         num_mlp_layers: int = 3,
-        num_classes: int = 3,
+        num_classes: int = 6,
         num_frames: int = 6,
         dropout=0.0,
         activation="relu",
@@ -26,8 +26,8 @@ class image_classify_decoder(nn.Module):
         self.num_classes = num_classes
         self.num_frames = num_frames
         assert (
-            self.num_classes == 7
-        ), f"The number of classes must be 7 ! Current setting is : {self.num_classes}. Pls change it to 7."
+            self.num_classes == 6
+        ), f"The number of classes must be 6 ! Current setting is : {self.num_classes}. Pls change it to 6."
 
         self.activation = _get_activation_fn(activation, d_model=self.hidden_dim, batch_dim=-1)
 
@@ -48,8 +48,9 @@ class image_classify_decoder(nn.Module):
         img_pos = backbone_out['vision_pos_enc'][-1]
         # bs, fea_dim, h, w = img_feature.shape
         # device = img_feature.device
+        
 
-        x = F.adaptive_avg_pool2d(img_feature+img_pos, (1, 1)).squeeze(2,3)
+        x = F.adaptive_avg_pool2d(img_feature+img_pos, (1, 1)).squeeze(2, 3)
         x = self._class_mlp(x)
         output_logits = self._class_head(x)
     

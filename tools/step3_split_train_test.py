@@ -3,13 +3,13 @@ import shutil
 import random
 
 # 定义数据的根目录
-base_dir = '/home/jinghao/projects/dental_plague_detection/dataset/2025_revised_for_training_all_bak/'
+base_dir = '/home/jinghao/projects/dental_plague_detection/dataset/2025_May_revised_training_dataset/'
 annotations_dir = os.path.join(base_dir, "Annotations")
 images_dir = os.path.join(base_dir, "JPEGImages")
 json_dir = os.path.join(base_dir, "Json")
 
 # 定义输出路径
-output_dir = "/home/jinghao/projects/dental_plague_detection/dataset/2025_revised_for_training_split/"
+output_dir ='/home/jinghao/projects/dental_plague_detection/dataset/2025_May_revised_training_split/'
 train_dir = os.path.join(output_dir, "train")
 test_dir = os.path.join(output_dir, "test")
 
@@ -26,7 +26,7 @@ os.makedirs(os.path.join(test_dir, "Json"), exist_ok=True)
 patient_folders = sorted(os.listdir(annotations_dir))  # 获取 Annotations 文件夹中的病人文件夹名称
 
 # 随机打乱病人文件夹名字
-random.seed(42)  # 设置随机种子以确保结果可重复
+random.seed(2025)  # 设置随机种子以确保结果可重复
 random.shuffle(patient_folders)
 
 # 分割为训练集和测试集

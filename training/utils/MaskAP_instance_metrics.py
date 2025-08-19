@@ -9,6 +9,8 @@ import cv2
 import time 
 import json
 import torchvision.transforms.functional as F
+from torch.nn import functional
+
 from pycocotools import mask as mask_utils
 from skimage.measure import find_contours
 from pycocotools.coco import COCO
@@ -17,6 +19,9 @@ from PIL import Image
 import random
 from pycocotools.cocoeval import maskUtils
 from torchvision.transforms import InterpolationMode
+from utils import box_ops
+from detectron2.utils.memory import retry_if_cuda_oom
+from detectron2.structures import Boxes, ImageList, Instances, BitMasks
 
 # 全局颜色映射字典
 label_to_color = {}
@@ -263,7 +268,7 @@ class Postprocessor_for_Instance_Segmentation:
     支持在循环中累加样本，最终计算整个数据集的指标。
     """
 
-    def __init__(self, gt_json_path, num_mask_classes, saved_jsons_dir, val_ins_seg_class_agnostic, device="cpu"):
+    def __init__(self, gt_json_path, num_mask_classes, saved_jsons_dir, val_ins_seg_class_agnostic, image_size, threshold_for_masks=0.5, device="cpu"):
         """
         初始化指标计算器。
 
@@ -283,6 +288,9 @@ class Postprocessor_for_Instance_Segmentation:
         
         self.filename_to_image_id = self._extract_filename_to_image_id_mapping(self.coco_data)
         self.pred_ins = []
+        self.image_size = image_size
+        self.num_classes = 3 # TODO
+        self.threshold_for_masks = threshold_for_masks
 
     def _extract_filename_to_image_id_mapping(self, coco_data):
         # 初始化映射字典
@@ -357,8 +365,9 @@ class Postprocessor_for_Instance_Segmentation:
             for ids, (pred_cls, (pred_box, pred_score)) in enumerate(pred_boxes.items()):
 
                 all_pred_masks = outputs[t_frame]['multistep_pred_multimasks_high_res']
+                all_is_obejct_appearing = outputs[t_frame]['multistep_object_score_logits']
                 # all_pred_masks = [outputs[t_frame]['multistep_aux_pred_multimasks'][-1]]
-                for pred_masks in all_pred_masks:
+                for pred_masks, is_obejct_appearing in zip(all_pred_masks, all_is_obejct_appearing):
                     
                     # pred_masks = torch.nn.functional.interpolate(
                     #     pred_masks.float(),
@@ -366,12 +375,12 @@ class Postprocessor_for_Instance_Segmentation:
                     #     mode="nearest",
                     # )
 
-                    # pred_mask = pred_masks[ids].sigmoid()[:-1] # get first three masks
-                    pred_mask = pred_masks[ids] # get first three masks
-                    pred_mask = (pred_mask > 0).int()
+                    pred_masks = functional.interpolate(pred_masks, size=(height, width), mode="bilinear", align_corners=False)
 
-                    # pred_mask = torch.argmax(pred_mask, dim=0)
-                    # pred_mask = pred_mask.unsqueeze(0)
+                    # pred_mask = pred_masks[ids].sigmoid() # get first three masks
+                    pred_mask = pred_masks[ids] # get first three masks
+                    is_obejct_appearing_for_single_box_rompt = is_obejct_appearing[ids].sigmoid()
+                    pred_mask = (pred_mask > 0).float()
                     
                     foreground_masks = {}
                     for mask_ids in range(pred_mask.shape[0]):
@@ -381,8 +390,11 @@ class Postprocessor_for_Instance_Segmentation:
                             foreground_masks[cls] = cls_mask.squeeze(0)
 
                     for mask_id, mask_per_cls in foreground_masks.items():
-                        mask_id_map = {1: 2, 2: 1, 3: 3}
+                        # filter is not object mask
+                        if is_obejct_appearing_for_single_box_rompt[mask_id-1] < self.threshold_for_masks:
+                            continue
 
+                        mask_id_map = {1: 2, 2: 1, 3: 3}
                         category_id = pred_cls * self.num_mask_classes + (mask_id_map[mask_id] - 1)
                         resized_mask = F.resize(mask_per_cls[None, None], (height, width), interpolation=InterpolationMode.NEAREST).squeeze().contiguous().cpu().numpy().astype(np.uint8)
                         # resized_mask = self.binary_mask_to_polygon(resized_mask)
@@ -398,6 +410,119 @@ class Postprocessor_for_Instance_Segmentation:
                                 }
                         self.pred_ins.append(pred_ins)
 
+
+    def box_postprocess(self, out_bbox, img_h, img_w):
+        # postprocess box height and width
+        boxes = box_ops.box_cxcywh_to_xyxy(out_bbox)
+        scale_fct = torch.tensor([img_w, img_h, img_w, img_h])
+        scale_fct = scale_fct.to(out_bbox)
+        boxes = boxes * scale_fct
+        return boxes
+
+    def instance_inference(self, mask_cls, mask_pred, mask_box_result):
+        # mask_pred is already processed to have the same shape as original input
+        image_size = mask_pred.shape[-2:]
+        scores = mask_cls.sigmoid()  # [100, 80]
+        num_queries = 300
+        device = mask_pred.device
+        labels = torch.arange(self.num_classes, device=device).unsqueeze(0).repeat(num_queries, 1).flatten(0, 1) # TODO
+        test_topk_per_image = 3
+        scores_per_image, topk_indices = scores.flatten(0, 1).topk(test_topk_per_image, sorted=False)  # select 100
+        labels_per_image = labels[topk_indices]
+        topk_indices = topk_indices // self.num_classes
+        mask_pred = mask_pred[topk_indices]
+        
+        result = Instances(image_size)
+        # mask (before sigmoid)
+        result.pred_masks = (mask_pred > 0).float()
+        # half mask box half pred box
+        mask_box_result = mask_box_result[topk_indices]
+        result.pred_boxes = Boxes(mask_box_result)
+        # Uncomment the following to get boxes from masks (this is slow)
+        # result.pred_boxes = BitMasks(mask_pred > 0).get_bounding_boxes()
+
+        # calculate average mask prob
+        mask_scores_per_image = (mask_pred.sigmoid().flatten(1) * result.pred_masks.flatten(1)).sum(1) / (result.pred_masks.flatten(1).sum(1) + 1e-6)
+        result.scores = scores_per_image * mask_scores_per_image
+        result.pred_classes = labels_per_image
+        return result
+
+    def instance_inference_for_MaskDINO(self, outputs, real_size):
+        
+        mask_cls_results = outputs["pred_logits"]
+        mask_pred_results = outputs["pred_masks"]
+        mask_box_results = outputs["pred_boxes"]
+        # upsample masks
+        mask_pred_results = functional.interpolate(
+            mask_pred_results,
+            size=self.image_size,
+            mode="bilinear",
+            align_corners=False,
+        )
+
+        del outputs
+
+        real_width, real_height = real_size
+        processed_results = []
+        for mask_cls_result, mask_pred_result, mask_box_result in zip(
+            mask_cls_results, mask_pred_results, mask_box_results
+        ):  # image_size is augmented size, not divisible to 32
+            processed_results.append({})
+            new_size = mask_pred_result.shape[-2:]  # padded size (divisible to 32)
+            
+            mask_box_result = mask_box_result.to(mask_pred_result)
+            height = new_size[0]/self.image_size[0]*real_height
+            width = new_size[1]/self.image_size[1]*real_width
+            mask_box_result = self.box_postprocess(mask_box_result, height, width)
+
+            instance_r = self.instance_inference(mask_cls_result, mask_pred_result, mask_box_result)
+            processed_results[-1]["instances"] = instance_r
+
+        return processed_results
+
+    def update_for_MaskDINO(self, indices_to_reserve, outputs, valid_box_mask_pairs, img_batch, video_name, is_visualized=False):
+
+        for t_frame, pred_boxes in valid_box_mask_pairs.items():
+            img_file_name = video_name + '/' + str(indices_to_reserve[t_frame]+1).zfill(3) + '.jpg'
+            # filter those images that are classfied wrong
+            if img_file_name in self.filename_to_image_id.keys():
+                img_id, (real_width, real_height) = self.filename_to_image_id[img_file_name]
+            else:
+                print("bad ", img_file_name)
+                continue
+            for ids, (pred_cls, (pred_box, pred_score_box)) in enumerate(pred_boxes.items()):
+
+                all_pred_masks = outputs[t_frame]['pred_masks']
+                processed_results = self.instance_inference_for_MaskDINO(all_pred_masks, (real_width, real_height))
+
+                # for pred_masks in processed_results:
+                pred_masks = processed_results[ids]
+                pred_masks_list = torch.unbind(pred_masks['instances'].pred_masks, dim=0)
+                pred_scores_list = torch.unbind(pred_masks['instances'].scores, dim=0)
+                pred_labels_list = torch.unbind(pred_masks['instances'].pred_classes, dim=0)
+
+                for pred_mask, pred_label, pred_score_mask in zip(pred_masks_list, pred_labels_list, pred_scores_list):
+                    # print(pred_label)
+                    if pred_label == 3:
+                        continue
+                    if pred_score_mask.item() < self.threshold_for_masks:
+                        continue
+                    mask_id_map = {1: 2, 2: 1, 3: 3}
+
+                    category_id = pred_cls * self.num_mask_classes + (mask_id_map[pred_label.item()+1] - 1)
+                    resized_mask = F.resize(pred_mask[None, None], (real_height, real_width), interpolation=InterpolationMode.NEAREST).squeeze().contiguous().cpu().numpy().astype(np.uint8)
+                    # resized_mask = self.binary_mask_to_polygon(resized_mask)
+                    resized_mask_rle = mask_utils.encode(np.asfortranarray(resized_mask))
+                    resized_mask_rle["counts"] = resized_mask_rle["counts"].decode("utf-8")
+
+                    pred_ins = {
+                                "image_id": img_id,
+                                "category_id": category_id,
+                                "score": pred_score_mask.item(),
+                                # "bbox": mask_utils.toBbox(resized_mask_rle).tolist(),  # 从 RLE 生成检测框, # error box coor=s
+                                "segmentation": resized_mask_rle,
+                            }
+                    self.pred_ins.append(pred_ins)
 
 
     def visualize_coco_results(self, image_id, coco_gt, coco_dt, save_path):
@@ -479,7 +604,7 @@ class Postprocessor_for_Instance_Segmentation:
         # 将预测结果保存为 COCO 格式的 JSON 文件
         with open(_gt_json_path, "w") as f:
             json.dump(coco_annotations, f)
-
+        
         # 创建 COCO 对象
         coco_gt = COCO(_gt_json_path)
         epoch = str(epoch).zfill(3)

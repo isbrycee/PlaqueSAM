@@ -3,6 +3,14 @@ import shutil
 import json
 from tqdm import tqdm
 
+angle_tooth_id_check_dict = {
+    '3': [0,1,2,3,4,20,21, 28, 29],
+    '4': [15,16,17,18,19,26,27, 28, 29],
+    '5': [5,6,7,8,9,22,23, 28, 29],
+    '6': [10,11,12,13,14, 24,25, 28, 29],
+}
+
+
 class_name_to_idx_map = {'51':0, '52':1, '53':2, '54':3, '55':4, 
                             '61':5, '62':6, '63':7, '64':8, '65':9, 
                             '71':10, '72':11, '73':12, '74':13, '75':14,
@@ -84,6 +92,8 @@ def check_and_resave_jsons(json_folder, save_folder):
         if '.DS_Store' in src_json:
             continue
         # print(src_json)
+        # angle_class = -1
+        # tooth_id_list = []
         with open(src_json, 'r') as f_json:
             json_data = json.load(f_json)
         json_data['imageData'] = ''
@@ -96,6 +106,7 @@ def check_and_resave_jsons(json_folder, save_folder):
                     else:
                         if int(_item['label'].split('_')[1]) > 7:
                             _item['label'] = 'mouth_7'
+                        # angle_class = _item['label'].split('_')[-1]
                     # print(src_json)
                     assert len(_item['label'].split('_')) == 2
                     assert _item['label'].split('_')[0] == 'mouth'
@@ -115,6 +126,7 @@ def check_and_resave_jsons(json_folder, save_folder):
                     top_left, bottom_right = correct_coordinates(top_left, bottom_right)
                     _item['points'][0] = top_left
                     _item['points'][1] = bottom_right
+                    # tooth_id_list.append(class_name_to_idx_map[_item['label']])
                 elif 'crown' in _item['label']:
                     _item['label'] = 'crown'
                 elif "_" in _item['label']:
@@ -133,22 +145,53 @@ def check_and_resave_jsons(json_folder, save_folder):
                     print(src_json)
                     print(_item['label'])
                     # import pdb; pdb.set_trace()
-            
+
+        # if angle_class == -1:
+        #     print(src_json)
+        #     print("The category of mouth is incorrect!!")
+        # elif angle_class == '2' or angle_class == '1':
+        #     pass
+        # else:
+        #     for tooth_id in tooth_id_list:
+        #         if tooth_id not in angle_tooth_id_check_dict[angle_class]:
+        #             print(src_json)
+        #             print("The category of tooth_id is incorrct!!")
+
         with open(os.path.join(save_folder, _json) ,"w") as f_w:
             json.dump(json_data, f_w)
+            
     if len(class_set) != 6:
         print(json_folder + ' is less than 6 classes !!! Pls fixed it !!!')
         # import pdb; pdb.set_trace()
 
 
 def organize_data(root_dir):
-    # annotation_folder_name = ''
-    # image_folder_name = ''
-    # for folder in os.listdir(root_dir):
-    #     if 'post' in folder:
-    #         annotation_folder_name = folder
-    #     else:
-    #         image_folder_name = folder
+    if not os.path.exists(root_dir):
+        raise FileNotFoundError(f"路径不存在: {root_dir}")
+
+    if not os.path.isdir(root_dir):
+        raise NotADirectoryError(f"提供的路径不是一个文件夹: {root_dir}")
+
+    # 遍历根目录下的直接子文件夹
+    child_folders = [f.path for f in os.scandir(root_dir) if f.is_dir()]
+    if not child_folders:
+        raise ValueError(f"根目录 `{root_dir}` 中没有子文件夹。")
+
+    for child_folder in child_folders:
+        # 遍历每个子文件夹的子文件夹
+        nested_folders = [f.path for f in os.scandir(child_folder) if f.is_dir()]
+        if not nested_folders:
+            print(f"子文件夹 `{child_folder}` 中没有子文件夹，跳过检查。")
+            continue
+        if 'checked' in nested_folders:
+            continue
+        for nested_folder in nested_folders:
+            # 检查子文件夹中的文件数量
+            files = [f for f in os.listdir(nested_folder) if os.path.isfile(os.path.join(nested_folder, f))]
+            file_count = len(files)
+            if file_count != 6:
+                print(f"子文件夹 `{nested_folder}` 中有 {file_count} 个文件，不符合要求！")
+                # raise ValueError(f"子文件夹 `{nested_folder}` 中有 {file_count} 个文件，不符合要求！")
 
     folder_prefixes = []  # Collect folder prefixes for checking
     for folder in os.listdir(root_dir):
@@ -175,9 +218,11 @@ def organize_data(root_dir):
                     check_and_resave_jsons(json_folder, json_save_dir)
 
 # 输入多个根目录路径
-root_directories = "/home/jinghao/projects/dental_plague_detection/dataset/2025_revised_bak_raw_data_from_kathy/"
+root_directories = "/home/jinghao/projects/dental_plague_detection/dataset/testset/"
 
-date = [ '9_26', '10_8/', '10_10', '10_24', '10_31', '11_7', '11_12', '11_19', '11_20', '12_3', '12_5']
+date = [ '9_26', '10_8/', '10_10', '10_24', '10_31', '11_3', '11_7', '11_12', '11_19', '11_20', '12_3', '12_5']
+# date = [ '12_5']
+
 # root_directories = ["/home/hust/haojing/dental_plague_dataset/10_24", ]
 # root_directories = '/home/hust/haojing/dental_plague_dataset/raw_data'
 # resaved_json_dir = '/home/hust/haojing/dental_plague_dataset/raw_data/resaved_json'

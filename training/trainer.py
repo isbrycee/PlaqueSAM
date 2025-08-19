@@ -61,8 +61,13 @@ from sam2.modeling.box_decoder import PostProcess
 from dataset.mAPCalculator import MAPCalculator
 from torchmetrics.classification import MulticlassJaccardIndex, Accuracy
 from utils.MaskAP_instance_metrics import InstanceSegmentationMetric, Postprocessor_for_Instance_Segmentation
-from training.utils.box_ops import box_norm_cxcywh_to_unnorm_xyxy, box_normalize_xyxy_to_cxcywh
+from training.utils.box_ops import box_norm_cxcywh_to_unnorm_xyxy, box_normalize_xyxy_to_cxcywh, box_xyxy_to_cxcywh
 import matplotlib.pyplot as plt
+from sam2.modeling.criterion import SetCriterion_MaskDINO, HungarianMatcher_MaskDINO
+from training.utils.mask_RLE_utils import encode_mask_rle, decode_mask_rle
+from collections import defaultdict
+from pycocotools import mask as mask_utils
+
 
 
 CORE_LOSS_KEY = "core_loss"
@@ -193,6 +198,7 @@ class Trainer:
         self.val_epoch_freq = val_epoch_freq
         self.best_val_ins_seg_50 = -1
         self.best_val_box_map_50 = -1
+        self.best_val_cls_acc = -1
         self.val_boxes_class_agnostic = val_boxes_class_agnostic
         self.val_ins_seg_class_agnostic = val_ins_seg_class_agnostic
         self.optim_conf = OptimConf(**optim) if optim is not None else None
@@ -203,9 +209,47 @@ class Trainer:
         self.where = 0.0
         # add by bryce
         
-        losses = ['labels', 'boxes'] # ['labels', 'boxes', 'cardinality']
-        self.loss_for_box = SetCriterion(num_classes=self.model_conf.box_decoder.num_classes, matcher=HungarianMatcher(), weight_dict=self.loss_conf.all.weight_dict, focal_alpha=self.loss_conf.all.focal_alpha_for_box, gamma=self.loss_conf.all.focal_gamma_for_box, losses=losses, image_size=model['image_size'])
-        self.loss_for_image_classify = ImageClassificationLoss(class_weights=self.loss_conf.all.weight_dict['loss_image_classify'], class_weights_for_each_class=None)
+        # losses = ['labels', 'boxes'] # ['labels', 'boxes', 'cardinality']
+        self.loss_for_box = SetCriterion(num_classes=self.model_conf.box_decoder.num_classes, matcher=HungarianMatcher(), \
+                                         weight_dict=self.loss_conf.all.weight_dict, focal_alpha=self.loss_conf.all.focal_alpha_for_box, \
+                                            gamma=self.loss_conf.all.focal_gamma_for_box, losses=['labels', 'boxes'], image_size=model['image_size'])
+        self.loss_for_image_classify = ImageClassificationLoss(class_weights=self.loss_conf.all.weight_dict['loss_image_classify'], \
+                                                               class_weights_for_each_class=None)
+        matcher = HungarianMatcher_MaskDINO(
+            cost_class=4.0,
+            cost_mask=5.0,
+            cost_dice=5.0,
+            cost_box=5.0,
+            cost_giou=2.0,
+            num_points=112 * 112,
+        )
+        weight_dict = {"loss_ce": 4.0}
+        weight_dict.update({"loss_mask": 20.0, "loss_dice": 10.0})
+        weight_dict.update({"loss_bbox":5.0,"loss_giou":2.0})
+        interm_weight_dict = {}
+        interm_weight_dict.update({k + f'_interm': v for k, v in weight_dict.items()})
+        weight_dict.update(interm_weight_dict)
+        aux_weight_dict = {}
+        for i in range(9):
+            aux_weight_dict.update({k + f"_{i}": v for k, v in weight_dict.items()})
+        weight_dict.update(aux_weight_dict)
+        no_object_weight = 0.1
+        
+        self.loss_for_MaskDINO = SetCriterion_MaskDINO(
+            3,
+            matcher=matcher,
+            weight_dict=weight_dict,
+            eos_coef=no_object_weight,
+            losses=['labels', 'boxes', 'masks'],
+            num_points=112 * 112,
+            oversample_ratio=3.0,
+            importance_sample_ratio=0.75,
+            dn='no',
+            dn_losses=[],
+            panoptic_on=False,
+            semantic_ce_loss=False,
+        )
+        self._setup_image_classify_to_ToI_mapping()
 
         self._infer_distributed_backend_if_none(distributed, accelerator)
 
@@ -250,7 +294,30 @@ class Trainer:
 
         self.load_checkpoint()
         self._setup_ddp_distributed_training(distributed, accelerator)
+        
         barrier()
+
+    # add by bryce
+    def _setup_image_classify_to_ToI_mapping(self):
+        """
+        Initializes the relationship between image angles and ToI
+        """
+        # self.image_angle_to_ToI_boxes_mapping = {
+        #     1: [0, 1, 5, 6, 20, 22, 28, 29],
+        #     2: [10, 11, 15, 16, 24, 26, 28, 29],
+        #     3: [2, 3, 4, 21, 28, 29],
+        #     4: [17, 18, 19, 27, 28, 29],
+        #     5: [7, 8, 9, 23, 28, 29],
+        #     6: [12, 13, 14, 25, 28, 29],
+        # }
+        self.image_angle_to_ToI_boxes_mapping = {
+            1: [0, 1, 5, 6, 20, 22, 28],
+            2: [10, 11, 15, 16, 24, 26, 28],
+            3: [2, 3, 4, 21, 28],
+            4: [17, 18, 19, 27, 28],
+            5: [7, 8, 9, 23, 28],
+            6: [12, 13, 14, 25, 28],
+        }
 
     def _setup_timers(self):
         """
@@ -471,6 +538,48 @@ class Trainer:
     def is_intermediate_val_epoch(self, epoch):
         return epoch % self.val_epoch_freq == 0 and epoch < self.max_epochs - 1
 
+    def visualize_single_dim_tensor(self, tensor, save_path="output.png"):
+        """
+        可视化语义分割结果，将 (512, 512) 的掩码张量可视化为彩色图像并保存。
+
+        参数:
+            tensor (torch.Tensor): 输入的张量，形状为 (512, 512)，像素值为 0/1/2/3.
+            save_path (str): 保存图像的路径，默认为 "output.png".
+        """
+        # 确保输入张量的形状正确
+        assert tensor.ndim == 2, "输入张量的形状必须为 (512, 512)"
+        w, h = tensor.shape
+        # 定义类别对应的颜色映射
+        cmap = plt.cm.get_cmap('viridis', 4)  # 4 个类别 (0, 1, 2, 3)
+        class_colors = {
+            0: cmap(0),  # 类别 0 的颜色 (RGB)
+            1: cmap(1),  # 类别 1 的颜色
+            2: cmap(2),  # 类别 2 的颜色
+            3: cmap(3),  # 类别 3 的颜色
+        }
+
+        # 创建画布和子图
+        fig, ax = plt.subplots(figsize=(5, 5))
+
+        # 将张量转换为 NumPy 数组
+        img = tensor.cpu().numpy()
+        colored_img = np.zeros((h, w, 3))  # 创建 RGB 图像
+
+        # 根据类别值填充颜色
+        for class_id, color in class_colors.items():
+            colored_img[img == class_id] = color[:3]  # 只取 RGB 值，忽略 alpha
+
+        # 可视化并关闭坐标轴
+        ax.imshow(colored_img)
+        ax.set_title("Tensor Segmentation Mask")
+        ax.axis('off')
+
+        # 调整布局并保存图像
+        plt.tight_layout()
+        plt.savefig(save_path, bbox_inches='tight', pad_inches=0)
+        plt.close()  # 关闭图像释放内存
+
+
     def visualize_semantic_segmentation(self, tensor, save_path="output.png"):
         """
         可视化语义分割结果，将 (N, 1024, 1024) 的张量可视化为 N 张子图，并保存到一张大图上。
@@ -503,7 +612,6 @@ class Trainer:
         for i in range(num_images):
             ax = axes[i]
             img = tensor[i].cpu().numpy()  # 将张量转换为 NumPy 数组
-            print(np.unique(img))
             colored_img = np.zeros((h, w, 3))  # 创建一个 RGB 图像
 
             # 根据类别值填充颜色
@@ -513,7 +621,7 @@ class Trainer:
             ax.imshow(colored_img)
             ax.set_title(f"Image {i+1}")
             ax.axis('off')  # 关闭坐标轴
-
+        
         # 隐藏多余的子图
         for i in range(num_images, rows * cols):
             axes[i].axis('off')
@@ -521,11 +629,11 @@ class Trainer:
         # 调整布局并保存图像
         plt.tight_layout()
         plt.savefig(save_path)
-
+        plt.close()  # 关闭图像释放内存
 
     def _get_pred_classification_info_for_evaluate(self, outputs_for_image_classify, targets_image_classify):
         targets_classes = targets_image_classify.to(self.device)
-        if outputs_for_image_classify:
+        if outputs_for_image_classify is not None:
             pred_image_classify_processed = outputs_for_image_classify.to(self.device)
         else:
             pred_image_classify_processed = targets_classes
@@ -564,23 +672,6 @@ class Trainer:
         return pred_masks_for_eval, gt_masks_for_eval
 
 
-    # def _get_pred_masks_info_for_evaluate_semantic_seg_MaskDINO(self, outputs_for_masks, gt_for_masks, use_one_box_per_prompt, threshold_for_masks):
-    #     masks_pred_list = []
-    #     for pred_mask_logits in outputs_for_masks:
-    #         pred_mask_logits = pred_mask_logits['multistep_pred_multimasks_high_res'][0][:, :-1]
-    #         # 沿着类别通道维度（dim=1）找到最大索引
-    #         pred_mask = (pred_mask_logits > threshold_for_masks).int()
-    #         if use_one_box_per_prompt:
-    #             pred_mask, _ = torch.max(pred_mask, dim=0, keepdim=True)
-    #         # self.visualize_semantic_segmentation(pred_mask)
-    #         masks_pred_list.append(pred_mask)
-            
-    #     # for pred
-    #     pred_masks_for_eval = torch.stack(masks_pred_list, dim=0).int()
-
-    #     return pred_masks_for_eval.squeeze(1), gt_for_masks.squeeze(1) # (); (6, 1024, 1024)
-    
-
     def _get_pred_masks_info_for_evaluate_semantic_Seg(self, outputs_for_masks, gt_for_masks, use_one_box_per_prompt):
         masks_pred_list = []
         for pred_mask_logits in outputs_for_masks:
@@ -599,7 +690,7 @@ class Trainer:
 
         return pred_masks_for_eval.squeeze(1), gt_for_masks.squeeze(1) # (); (6, 1024, 1024)
 
-    def _get_pred_boxes_info_for_evaluate(self, outputs_for_boxes, gt_for_boxes, score_threshod=0.5):
+    def _get_pred_boxes_info_for_evaluate(self, outputs_for_boxes, gt_for_boxes, score_threshod=0.5, pred_image_classify=None):
         
         # box_decoder_pred = {'pred_logits': outputs_for_boxes['box_decoder_pred_cls'],
         #                         'pred_boxes': outputs_for_boxes['box_decoder_pred_boxes']}
@@ -609,11 +700,13 @@ class Trainer:
         results = Boxes_Decoder_PostProcess(outputs_for_boxes, target_sizes=target_sizes, not_to_xyxy=False, test=False)
         
         pred_boxes_per_frame = []
-        for pred_boxed_info in results:
+        for idx, pred_boxed_info in enumerate(results):
             scores = pred_boxed_info['scores']
             labels = pred_boxed_info['labels']
             boxes = pred_boxed_info['boxes']
-            select_mask = scores > score_threshod
+            ToI_per_image_angle_list = self.image_angle_to_ToI_boxes_mapping[(pred_image_classify[idx]+1).item()]
+            select_mask = torch.isin(labels, torch.tensor(ToI_per_image_angle_list).to(device)) & (scores > score_threshod)
+            # select_mask = scores > score_threshod
             pred_dict = {
                 'boxes': boxes[select_mask],
                 'size': target_sizes,
@@ -640,7 +733,78 @@ class Trainer:
         interm_coord = ref_enc[-1]
 
         return  {'pred_logits': interm_class, 'pred_boxes': interm_coord}
+    
+    def generate_instance(self, mask_tensor, image_size_xyxy, device):
+        """
+        根据输入的语义分割 mask tensor 生成目标实例，包括 labels、masks 和 boxes。
 
+        参数:
+            mask_tensor: (H, W) 的 tensor，值为 0 (背景类)、1、2、3。
+            box_xyxy_to_cxcywh: 函数，将 xyxy 坐标转换为 cxcywh 格式。
+            image_size_xyxy: (W, H)，表示图像的宽高，用于归一化 boxes。
+
+        返回:
+            instance: 包含 "labels", "masks", 和 "boxes" 的字典。
+        """
+        # 忽略背景类 (0)
+        unique_labels = torch.unique(mask_tensor)
+        unique_labels = unique_labels[unique_labels != 0]  # 去除背景
+
+        labels = []
+        masks = []
+        boxes = []
+        for label in unique_labels:
+            # 获取当前类别的 mask (前景为 1，背景为 0)
+            binary_mask = (mask_tensor == label).float()
+            
+            # 找到该类别的 bounding box
+            pos = torch.nonzero(binary_mask, as_tuple=False)  # 获取前景的坐标
+            if pos.size(0) == 0:
+                continue  # 如果前景不存在，跳过
+            x_min, y_min = pos[:, 1].min().item(), pos[:, 0].min().item()
+            x_max, y_max = pos[:, 1].max().item(), pos[:, 0].max().item()
+
+            # 保存 labels, masks, 和 boxes
+            labels.append(label-1)
+            masks.append(binary_mask)
+            boxes.append(torch.tensor([x_min, y_min, x_max, y_max], dtype=torch.float32))
+
+        # if len(labels) == 0:
+        #     # 如果没有前景类，返回空的结构
+        #     return {
+        #         "labels": torch.tensor([], dtype=torch.int64),
+        #         "masks": torch.empty(0, *mask_tensor.shape, dtype=torch.float32),
+        #         "boxes": torch.empty(0, 4, dtype=torch.float32)
+        #     }
+
+        # 转换为 tensor
+        labels = torch.tensor(labels, dtype=torch.int64, device=device)
+        masks = torch.stack(masks, dim=0).to(device) # 将多个 (H, W) 的 mask 堆叠成 (N, H, W)
+        boxes = torch.stack(boxes, dim=0).to(device)  # 将多个 (4,) 的 box 堆叠成 (N, 4)
+
+        # 转换 boxes 到 cxcywh 格式并归一化
+        boxes = box_xyxy_to_cxcywh(boxes)/image_size_xyxy
+
+        return {
+            "labels": labels,
+            "masks": masks,
+            "boxes": boxes
+        }
+
+    def _perpare_target_for_MaskDINO(self, targets_for_semantic_seg_per_box_prompt, device):
+
+        new_targets_batched = []
+        
+        for targets in targets_for_semantic_seg_per_box_prompt:
+            new_targets_per_image = []
+            for _, encoded_mask in targets.values():
+                target_mask = torch.from_numpy(decode_mask_rle(encoded_mask))
+                w, h = target_mask.shape
+                image_size_xyxy = torch.as_tensor([w, h, w, h], dtype=torch.float, device=self.device)
+                new_targets_per_image.append(self.generate_instance(target_mask, image_size_xyxy, device))
+            new_targets_batched.append(new_targets_per_image)
+
+        return new_targets_batched
 
     def _step(
         self,
@@ -648,7 +812,12 @@ class Trainer:
         model: nn.Module,
         phase: str,
     ):
-        outputs, outputs_for_boxes, output_for_two_stage, pred_image_classifiy_logits, pred_image_classify_processed, indices_to_reserve, valid_box_mask_pairs = model(batch, phase)
+        (outputs, outputs_for_boxes, output_for_two_stage, 
+            pred_image_classifiy_logits, 
+            pred_image_classify_processed, 
+            indices_to_reserve, 
+            valid_box_mask_pairs) = model(batch, phase)
+        
         targets = batch.masks[indices_to_reserve] # (6, 3, 256, 256)
         targets_for_semantic_seg = batch.masks_for_semantic_seg[indices_to_reserve].to(torch.int64)
         targets_for_semantic_seg_per_box_prompt = [batch.box_mask_pairs[ids] for ids in indices_to_reserve]
@@ -690,12 +859,34 @@ class Trainer:
         device = targets.device
         key = batch.dict_key  # key for dataset
         # loss = self.loss[key](outputs, targets)
-
-        if self.model_conf.use_one_box_per_prompt:
-            loss = self.loss[key](outputs, targets_for_semantic_seg_per_box_prompt, use_one_box_per_prompt=True, mode=phase) # add by bryce
+        
+        use_MaskDINO_decoder = False
+        
+        #TODO, add loss for val stage
+        if phase == 'val':
+            loss = {'val': torch.tensor(-1, device=device), 
+                    'core_loss': torch.tensor(-1, device=device)}
         else:
-            loss = self.loss[key](outputs, targets_for_semantic_seg, use_one_box_per_prompt=False, mode=phase) # add by bryce
-
+            if use_MaskDINO_decoder:
+                targets_for_MaskDINO = self._perpare_target_for_MaskDINO(targets_for_semantic_seg_per_box_prompt, device)
+                loss = defaultdict(int)
+                for output, target in zip(outputs, targets_for_MaskDINO):
+                    outputs_for_MaskDINO = output['pred_masks']
+                    tmp_loss = self.loss_for_MaskDINO(outputs_for_MaskDINO, target)
+                    for k in list(tmp_loss.keys()):
+                        if k in self.loss_for_MaskDINO.weight_dict:
+                            tmp_loss[k] *= self.loss_for_MaskDINO.weight_dict[k]
+                        else:
+                            # remove this loss if not specified in `weight_dict`
+                            tmp_loss.pop(k)
+                    for k, value in tmp_loss.items():
+                        loss[k] = value
+        
+            elif self.model_conf.use_one_box_per_prompt:
+                loss = self.loss[key](outputs, targets_for_semantic_seg_per_box_prompt, use_one_box_per_prompt=True, mode=phase) # add by bryce
+            else:
+                loss = self.loss[key](outputs, targets_for_semantic_seg, use_one_box_per_prompt=False, mode=phase) # add by bryce
+        
         # add by bryce; loss for boxes & evaluation for box
         targets_boxes = [batch.boxes[indx] for indx in indices_to_reserve] # dict({0:size(9,2,2)})
         targets_boxes_xyxy_unnorm = copy.deepcopy(targets_boxes)
@@ -707,7 +898,7 @@ class Trainer:
             target['labels'] = target['labels'].to(device)
         targets_boxes_cxcywh = copy.deepcopy(targets_boxes)
         # end
-
+        
         # for loss of boxes final prediction supervision
         outputs_boxes = {'pred_logits': outputs_for_boxes['box_decoder_pred_cls'][-1], 
                         'pred_boxes': outputs_for_boxes['box_decoder_pred_boxes'][-1]}
@@ -725,16 +916,15 @@ class Trainer:
             for k, v in loss_boxes_aux.items():
                 new_key = k.split('_')[0] + f'_boxes_dec_layer{i}_' + k.split('_')[1]
                 loss[new_key] = v
-
-        # for two-stage
-
+        
+        # for box two-stage
         interm_outputs_boxes = self._set_interm_loss_for_box_decoder(output_for_two_stage)
         loss_interm_boxes = self.loss_for_box(interm_outputs_boxes, targets_boxes_cxcywh)
         for k, v in loss_boxes.items():
             new_key = k.split('_')[0] + '_interm_boxes_' + k.split('_')[1]
             loss[new_key] = v
         # end loss of boxes 
-
+        
         # add by bryce; loss for image_classify
         targets_image_classify = torch.tensor(batch.image_classify).to(device)
         loss_image_classify = self.loss_for_image_classify(pred_image_classifiy_logits, targets_image_classify)
@@ -746,7 +936,7 @@ class Trainer:
         if phase == 'val':
             outputs_boxes = {'pred_logits': outputs_for_boxes['box_decoder_pred_cls'][-1], 
                         'pred_boxes': outputs_for_boxes['box_decoder_pred_boxes'][-1]}
-            preds_boxes, targets_boxes = self._get_pred_boxes_info_for_evaluate(outputs_boxes, targets_boxes_xyxy_unnorm, self.model_conf.threshold_for_boxes)
+            preds_boxes, targets_boxes = self._get_pred_boxes_info_for_evaluate(outputs_boxes, targets_boxes_xyxy_unnorm, self.model_conf.threshold_for_boxes, pred_image_classify_processed)
             ############## for box vis, check box ###################
             # 绘制图像
             # boxes = preds_boxes[0]['boxes'].cpu()
@@ -776,10 +966,11 @@ class Trainer:
             # plt.savefig("output.png", dpi=300, bbox_inches='tight')
             # plt.close()  # 关闭绘图窗口
             ############## end for box vis, check box ###################
-            # preds_masks, targets_masks = self._get_pred_masks_info_for_evaluate(outputs, targets, self.model_conf.threshold_for_masks)
             
-            preds_masks, targets_masks = self._get_pred_masks_info_for_evaluate_semantic_Seg(outputs, targets_for_semantic_seg, self.model_conf.use_one_box_per_prompt)
-            # preds_masks, targets_masks = self._get_pred_masks_info_for_evaluate_semantic_seg_MaskDINO(outputs, targets_for_semantic_seg, self.model_conf.use_one_box_per_prompt, self.model_conf.threshold_for_masks)
+            # preds_masks, targets_masks = self._get_pred_masks_info_for_evaluate(outputs, targets, self.model_conf.threshold_for_masks)
+
+            preds_masks, targets_masks = None, None
+            # preds_masks, targets_masks = self._get_pred_masks_info_for_evaluate_semantic_Seg(outputs, targets_for_semantic_seg, self.model_conf.use_one_box_per_prompt)
 
             preds_classes, targets_classes = self._get_pred_classification_info_for_evaluate(pred_image_classify_processed, targets_image_classify)
         # 
@@ -813,9 +1004,14 @@ class Trainer:
 
             # for computing all loss; 
             # seg loss
-            seg_loss = self._log_loss_detailed_and_return_core_loss(
-                loss, loss_log_str, self.steps[phase]
-            )
+            if use_MaskDINO_decoder:
+                seg_loss = self._log_loss_detailed_and_return_core_loss_for_MaskDINO(
+                    loss, loss_log_str, self.steps[phase]
+                )
+            else:
+                seg_loss = self._log_loss_detailed_and_return_core_loss(
+                    loss, loss_log_str, self.steps[phase]
+                )
             # add by bryce; box loss
             box_loss = self._add_boxes_loss_into_core_loss(
                 device, loss_boxes, aux_loss_boxes_list, loss_interm_boxes, loss_log_str, self.steps[phase]
@@ -826,8 +1022,10 @@ class Trainer:
             )
 
             if self.model_conf.train_stage == '1st':
-                loss_all = box_loss + image_cls_loss
+                loss_all = image_cls_loss
             elif self.model_conf.train_stage == '2nd':
+                loss_all = box_loss
+            elif self.model_conf.train_stage == '3rd':
                 loss_all = seg_loss
             else: 
                 loss_all = seg_loss + box_loss + image_cls_loss
@@ -876,22 +1074,6 @@ class Trainer:
                     self.run_val()
                     self.epoch += 1
         
-            # add by bryce; for seperate training; twostage
-            mask_decoder_related_params = ['sam_prompt_encoder', 'sam_mask_decoder', 'obj_ptr_tpos_proj', \
-                                           'maskmem_tpos_enc', 'no_mem_embed', 'no_mem_pos_enc', 'no_obj_ptr', \
-                                           'no_obj_embed_spatial', 'mask_downsample', 'obj_ptr_proj', ]
-            if self.model_conf.train_stage == '1st':
-                # 冻结mask decoder，解冻其他参数
-                for name, param in self.model.named_parameters():
-                    param.requires_grad = all(s not in name for s in mask_decoder_related_params)
-            elif self.model_conf.train_stage == '2nd':
-                # 解冻mask decoder，冻结其他参数
-                for name, param in self.model.named_parameters():
-                    param.requires_grad = any(s in name for s in mask_decoder_related_params)
-            else:
-                for name, param in self.model.named_parameters():
-                    param.requires_grad = True
-
             self.run_train()
             self.run_val()
         elif self.mode == "val":
@@ -1012,10 +1194,10 @@ class Trainer:
             self._get_meters(curr_phases),
             prefix="Val Epoch: [{}]".format(self.epoch),
         )
-
+        
         end = time.time()
         # add by bryce 
-        BoxmAP_calculator = MAPCalculator(class_agnostic=self.val_boxes_class_agnostic)
+        BoxmAP_calculator = MAPCalculator(saved_jsons_dir=self.logging_conf.saved_jsons_dir, class_agnostic=self.val_boxes_class_agnostic)
         # +1 for background
         mIoU_calculator = MulticlassJaccardIndex(num_classes=self.model_conf.num_classes_for_mask+1, average=None, ignore_index=0).to(self.device)
         accuracy_calculator = Accuracy(task="multiclass", num_classes=self.model_conf.image_classify_decoder.num_classes).to(self.device)
@@ -1023,7 +1205,10 @@ class Trainer:
 
         gt_json_path = self.data_conf.val.datasets[0].dataset.datasets[0].video_dataset.gt_ins_seg_json
         Ins_Seg_postprocessor = Postprocessor_for_Instance_Segmentation(gt_json_path, self.model_conf.num_classes_for_mask, self.logging_conf.saved_jsons_dir, \
-                                                                        self.val_ins_seg_class_agnostic, device=self.device)
+                                                                        self.val_ins_seg_class_agnostic, \
+                                                                        image_size=(self.model_conf.image_size, self.model_conf.image_size),\
+                                                                        threshold_for_masks=self.model_conf.threshold_for_masks, \
+                                                                        device=self.device)
 
         for data_iter, batch in enumerate(val_loader):
             # measure data loading time
@@ -1048,16 +1233,16 @@ class Trainer:
                             phase,
                         )
                         indices_to_reserve_for_visual = [i for i, value in enumerate(batch.image_classify) if value != 6]
-                        BoxmAP_calculator.update(preds_boxes, targets_boxes, batch.img_batch[indices_to_reserve_for_visual], batch.metadata.video_name, is_visualized=True) # add by bryce for compute box mAP
-                        mIoU_calculator.update(preds_masks, targets_masks) # add by bryce for compute mIoU
-                        # if not torch.equal(preds_classes, targets_classes):
-                        #     print(batch.metadata.video_name)
-                        #     print('pred:', preds_classes)
-                        #     print('target:', targets_classes)
+                        BoxmAP_calculator.update(preds_boxes, targets_boxes, batch.img_batch[indices_to_reserve_for_visual], batch.metadata.video_name, is_visualized=self.model_conf.is_visualize_bad_cases_from_boxes) # add by bryce for compute box mAP
+                        # mIoU_calculator.update(preds_masks, targets_masks) # add by bryce for compute mIoU
+                        if not torch.equal(preds_classes, targets_classes):
+                            print(batch.metadata.video_name)
+                            print('pred:', preds_classes)
+                            print('target:', targets_classes)
                         accuracy_calculator.update(preds_classes, targets_classes) # add by bryce for compute image classification accuracy
-                        MaskmAP_calculator.update(preds_boxes, targets_boxes, preds_masks, targets_masks)
+                        # MaskmAP_calculator.update(preds_boxes, targets_boxes, preds_masks, targets_masks)
+                        # Ins_Seg_postprocessor.update_for_MaskDINO(indices_to_reserve, outputs, valid_box_mask_pairs, batch.img_batch[indices_to_reserve_for_visual], batch.metadata.video_name, is_visualized=False)
                         Ins_Seg_postprocessor.update(indices_to_reserve, outputs, valid_box_mask_pairs, batch.img_batch[indices_to_reserve_for_visual], batch.metadata.video_name, is_visualized=False)
-
 
                         loss_dict, batch_size, extra_losses = ret_tuple
                         assert len(loss_dict) == 1
@@ -1113,23 +1298,24 @@ class Trainer:
             out_dict.update(self._get_trainer_state(phase))
         self._reset_meters(curr_phases)
         logging.info(f"Meters: {out_dict}")
-
+        
         # add by bryce; for Metrics logging; for compute accuracy
         classification_acc_results = accuracy_calculator.compute()
         logging.info(f"Image Classification ACC Results: {classification_acc_results}")
         # add by bryce; for Metrics logging; for compute mAP
-        box_mAP_results = BoxmAP_calculator.compute()
+        box_mAP_results = BoxmAP_calculator.compute_and_save_json(self.epoch, is_save_json_for_boxes_prediction=self.model_conf.is_save_json_for_boxes_prediction)
         logging.info(f"Object Detection mAP Results: {box_mAP_results}")
+
         # add by bryce; for Metrics logging; 计算平均 IoU（mIoU）
-        mask_mIoU_results_per_class = mIoU_calculator.compute()
-        mask_mIoU_results = mask_mIoU_results_per_class[1:].mean()
-        logging.info(f"Mask IoU Results Per Class: {mask_mIoU_results_per_class}")
-        logging.info(f"Mask Mean IoU (mIoU) Results: {mask_mIoU_results}")
-        # print("Object Detection mAP Results:", box_map_results)
+        # mask_mIoU_results_per_class = mIoU_calculator.compute()
+        # mask_mIoU_results = mask_mIoU_results_per_class[1:].mean()
+        mask_mIoU_results = -1.0
+        # logging.info(f"Mask IoU Results Per Class: {mask_mIoU_results_per_class}")
+        # logging.info(f"Mask Mean IoU (mIoU) Results: {mask_mIoU_results}")
 
         # add by bryce; for Metrics logging; for compute MaskmAP
-        box_MaskmAP_results = MaskmAP_calculator.compute()
-        logging.info(f"Instance Segmentation mAP Results: {box_MaskmAP_results}")
+        # box_MaskmAP_results = MaskmAP_calculator.compute()
+        # logging.info(f"Instance Segmentation mAP Results: {box_MaskmAP_results}")
 
         # add by bryce; for Metrics logging; for compute ins seg ap
         ins_seg_metrics = Ins_Seg_postprocessor.compute_coco_metrics_for_ins_seg(self.epoch)
@@ -1154,6 +1340,12 @@ class Trainer:
         logging.info(data_row2)
         logging.info(separator2)
         
+
+        if classification_acc_results > self.best_val_cls_acc:
+            self.best_val_cls_acc = classification_acc_results
+            self.save_checkpoint(self.epoch + 1, ['best_img_cls_acc'])
+            logging.info(f"Best checkpoint has been saved in epoch {self.epoch}. The current best image classification accuracy is : {self.best_val_cls_acc}")
+
 
         if box_mAP_results['map_50'] > self.best_val_box_map_50:
             self.best_val_box_map_50 = box_mAP_results['map_50']
@@ -1213,7 +1405,7 @@ class Trainer:
         end = time.time()
 
         # for name, param in self.model.named_parameters():
-        #     print(name)
+            # print(name)
         #     print(param.requires_grad)
 
         for data_iter, batch in enumerate(train_loader):
@@ -1338,6 +1530,7 @@ class Trainer:
         # gradients
         self.optim.zero_grad(set_to_none=True)
 
+        # print for debug video name
         # print(batch.metadata.video_name)
 
         with torch.cuda.amp.autocast(
@@ -1364,7 +1557,7 @@ class Trainer:
                 return
 
         self.scaler.scale(loss).backward(retain_graph=True) # retain_graph=True
-        
+    
         loss_mts[loss_key].update(loss.item(), batch_size)
         for extra_loss_key, extra_loss in extra_losses.items():
             if extra_loss_key not in extra_loss_mts:
@@ -1481,6 +1674,12 @@ class Trainer:
         self.logger = Logger(self.logging_conf)
 
         self.model = instantiate(self.model_conf, _convert_="all")
+        
+        # add by bryce; for seperate training; twostage
+        logging.info(f"Current training stage is {self.model_conf.train_stage}.")
+        _set_trainable_params(self.model, self.model_conf.train_stage)
+        # End
+
         print_model_summary(self.model)
 
         self.loss = None
@@ -1525,6 +1724,19 @@ class Trainer:
             for k in loss:
                 log_str = os.path.join(loss_str, k)
                 self.logger.log(log_str, loss[k], step)
+        return core_loss
+
+    # add by bryce;
+    def _log_loss_detailed_and_return_core_loss_for_MaskDINO(self, loss, loss_str, step):
+        core_loss = 0.0
+        if step % self.logging_conf.log_scalar_frequency == 0:
+            for k in loss:
+                log_str = os.path.join(loss_str, k)
+                self.logger.log(log_str, loss[k], step)
+
+        for loss_key, weight in loss.items():
+            core_loss += weight
+
         return core_loss
 
     # add by bryce
@@ -1576,6 +1788,42 @@ class Trainer:
 
         return core_loss
     # end 
+
+def _set_trainable_params(model: torch.nn.Module, train_stage: str = ""):
+    
+    # set all params to requires_grad=False
+    for name, param in model.named_parameters():
+        # print(name)
+        param.requires_grad = False
+
+    first_stage_trained_params = ['image_classify_decoder'] 
+    second_stage_trained_params = ['box_decoder', 'conv_s0', 'conv_s1', 'obj_ptr_proj', 'obj_ptr_tpos_proj']
+    third_stage_trained_params = ['sam_prompt_encoder', 'sam_mask_decoder', 'no_mem_embed', 'no_mem_pos_enc', 'mask_downsample', 'memory_attention'] # 
+    
+    if train_stage == '1st':
+        # 冻结mask decoder，解冻其他参数
+        for name, param in model.named_parameters():
+            param.requires_grad = any(s in name for s in first_stage_trained_params)
+
+    elif train_stage == '2nd':
+        # 解冻mask decoder，冻结其他参数
+        for name, param in model.named_parameters():
+            param.requires_grad = any(s in name for s in second_stage_trained_params)
+            
+    elif train_stage == '3rd':
+        # 解冻mask decoder，冻结其他参数
+        for name, param in model.named_parameters():
+            param.requires_grad = (
+                any(s in name for s in third_stage_trained_params) and
+                all(s not in name for s in second_stage_trained_params)
+            )
+            
+            print(name, param.requires_grad)
+            # param.requires_grad = any(s in name for s in third_stage_trained_params)
+    else:
+        for name, param in model.named_parameters():
+            param.requires_grad = True
+
 
 def print_model_summary(model: torch.nn.Module, log_dir: str = ""):
     """

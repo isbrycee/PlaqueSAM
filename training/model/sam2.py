@@ -28,6 +28,7 @@ from sam2.modeling.template_encoder import TemplateFeatureExtractor
 
 import sys   
 sys.setrecursionlimit(10000)
+import matplotlib.pyplot as plt
 
 
 class SAM2Train(SAM2Base):
@@ -50,6 +51,8 @@ class SAM2Train(SAM2Base):
         box_decoder_postprocess_nms_iou_threshold=0.5, # add by bryce
         prior_loc_templates_npy_input_path=None, # add by bryce
         train_stage='1st', # add by bryce
+        is_visualize_bad_cases_from_boxes=False, # add by bryce
+        is_save_json_for_boxes_prediction=False, # add by bryce
         prob_to_use_pt_input_for_train=0.0,
         prob_to_use_pt_input_for_eval=0.0,
         prob_to_use_box_input_for_train=0.0,
@@ -128,6 +131,8 @@ class SAM2Train(SAM2Base):
 
         # add by bryce
         self.train_stage = train_stage
+        self.is_visualize_bad_cases_from_boxes = is_visualize_bad_cases_from_boxes
+        self.is_save_json_for_boxes_prediction = is_save_json_for_boxes_prediction
         self.num_frames = num_frames
         self.num_frames_with_invalid = num_frames_with_invalid
         self.num_multimask_outputs = num_multimask_outputs
@@ -139,6 +144,13 @@ class SAM2Train(SAM2Base):
         self.Boxes_Decoder_PostProcess = PostProcess(box_decoder_max_num_select, box_decoder_postprocess_nms_iou_threshold)
         self.prior_loc_templates_npy_input_path = prior_loc_templates_npy_input_path
         self.TemplateFeatureExtractor = TemplateFeatureExtractor(self.prior_loc_templates_npy_input_path)
+        self.img_angle_id2ToI_map = {1: [0, 1, 5, 6, 28],  # 20, 22
+                                    2: [10, 11, 15, 16, 24, 26, 28], 
+                                    3: [2, 3, 4, 21, ], # remove 28 (double teeth)
+                                    4: [17, 18, 19, 27, ], # remove 28 (double teeth)
+                                    5: [7, 8, 9, 23, ], # remove 28 (double teeth)
+                                    6: [12, 13, 14, 25, ], # remove 28 (double teeth)
+                                    }
         # end
 
     def forward(self, input: BatchedVideoDatapoint, phase: str):
@@ -148,7 +160,7 @@ class SAM2Train(SAM2Base):
         else:
             # defer image feature computation on a frame until it's being tracked
             backbone_out = {"backbone_fpn": None, "vision_pos_enc": None}
-
+        
         prior_loc_template_memory = self.TemplateFeatureExtractor.get_prior_loc_template_memory()
         backbone_out['prior_loc_template_memory'] = prior_loc_template_memory
         
@@ -171,9 +183,11 @@ class SAM2Train(SAM2Base):
                 template_order_id_in_img_batch = [value for value in pred_image_classify_processed if value != 6]
             else:
                 indices_to_reserve = [i for i, value in enumerate(input.image_classify) if value != 6]
-                pred_image_classify_processed = None
+                pred_image_classify_processed = torch.tensor([value for value in input.image_classify if value != 6])
                 template_order_id_in_img_batch = [value for value in input.image_classify if value != 6]
         assert len(indices_to_reserve) == 6
+        # image_classifiy_category aims to box prompt selection 
+        image_classifiy_category = [input.image_classify[_id] for _id in indices_to_reserve]
         backbone_out['vision_features'] = backbone_out['vision_features'][indices_to_reserve]
         backbone_out['template_order_id_in_img_batch'] = template_order_id_in_img_batch
         for j in range(len(backbone_out['vision_pos_enc'])):
@@ -192,12 +206,13 @@ class SAM2Train(SAM2Base):
         # end
 
         # backbone_out = self.prepare_prompt_inputs(backbone_out, input)
-
-        backbone_out = self.prepare_prompt_inputs_box(backbone_out, input, indices_to_reserve, phase=phase, threshold=self.threshold_for_boxes)
-
+        backbone_out = self.prepare_prompt_inputs_box(backbone_out, input, indices_to_reserve, phase=phase, \
+                                                  threshold=self.threshold_for_boxes, image_classifiy_category=image_classifiy_category)
+        
         previous_stages_out, valid_box_mask_pairs = self.forward_tracking(backbone_out, input)
         
-        return previous_stages_out, backbone_out, output_for_two_stage, pred_image_classifiy_logits, pred_image_classify_processed, indices_to_reserve, valid_box_mask_pairs
+        return previous_stages_out, backbone_out, output_for_two_stage, pred_image_classifiy_logits, \
+                            pred_image_classify_processed, indices_to_reserve, valid_box_mask_pairs
 
 
     def _prepare_backbone_features_per_frame(self, img_batch, img_ids):
@@ -353,7 +368,7 @@ class SAM2Train(SAM2Base):
 
         return backbone_out
 
-    def prepare_prompt_inputs_box(self, backbone_out, input, indices_to_reserve, phase, threshold=0.3, start_frame_idx=0):
+    def prepare_prompt_inputs_box(self, backbone_out, input, indices_to_reserve, phase, threshold=0.3, start_frame_idx=0, image_classifiy_category=None):
         """
         Prepare input mask, point or box prompts. Optionally, we allow tracking from
         a custom `start_frame_idx` to the end of the video (for evaluation purposes).
@@ -383,7 +398,7 @@ class SAM2Train(SAM2Base):
 
             gt_boxes_per_frame = []
             valid_box_mask_pairs = []
-            for pred_boxed_info in results:
+            for batched_id, pred_boxed_info in enumerate(results):
                 scores = pred_boxed_info['scores']
                 labels = pred_boxed_info['labels']
                 boxes = pred_boxed_info['boxes']
@@ -400,6 +415,8 @@ class SAM2Train(SAM2Base):
                 pred_clsID_box_pair_per_frame = {}
                 unique_classes = torch.unique(pred_dict['box_label'])
                 for cls in unique_classes:
+                    if cls.item() not in self.img_angle_id2ToI_map[batched_id+1]:
+                        continue
                     # 创建类别掩码，筛选当前类别的数据
                     cls_mask = (pred_dict['box_label'] == cls)
                     # 获取当前类别的得分和边界框
@@ -415,9 +432,11 @@ class SAM2Train(SAM2Base):
                     pred_clsID_box_pair_per_frame[cls.item()] = (cls_boxes[max_score_idx].cpu().numpy().tolist(), cls_scores[max_score_idx].item())
                 # for ids in range(pred_dict['box_label'].shape[0]):
                 #     pred_clsID_box_pair_per_frame[pred_dict['box_label'][ids].item()] = (pred_dict['boxes'][ids].cpu().numpy().tolist(), None)
+
                 valid_box_mask_pairs.append(pred_clsID_box_pair_per_frame)
 
-            # for given the gt box prompt during eval period; add by bryce
+            # for given the gt box prompt during eval period; add by bryce; 
+            # only test the segmentation performace while input gt box prompt
             # gt_boxes_per_frame = [input.boxes[indx] for indx in indices_to_reserve] # add by bryce; list[{'labels': tensor([ids; num_boxes]), 'boxes': tensor([(absolute xyxy (num_boxes, 4))])}, ]
             # valid_box_mask_pairs = [input.box_mask_pairs[ids] for ids in indices_to_reserve]
             # for box_mask_pair in valid_box_mask_pairs:
@@ -474,11 +493,15 @@ class SAM2Train(SAM2Base):
             init_cond_frames = [start_frame_idx]  # starting frame
         else:
             # starting frame + randomly selected remaining frames (without replacement)
-            init_cond_frames = [start_frame_idx] + self.rng.choice(
-                range(start_frame_idx + 1, num_frames),
-                num_init_cond_frames - 1,
-                replace=False,
-            ).tolist()
+            # changed by bryce; !!! note here !!!
+            # init_cond_frames = [start_frame_idx] + self.rng.choice(
+            #     range(start_frame_idx + 1, num_frames),
+            #     num_init_cond_frames - 1,
+            #     replace=False,
+            # ).tolist()
+            init_cond_frames = indices_to_reserve
+
+        # init_cond_frames.sort() # add by bryce
         backbone_out["init_cond_frames"] = init_cond_frames
         backbone_out["frames_not_in_init_cond"] = [
             t for t in range(start_frame_idx, num_frames) if t not in init_cond_frames
@@ -487,6 +510,11 @@ class SAM2Train(SAM2Base):
         backbone_out["mask_inputs_per_frame"] = {}  # {frame_idx: <input_masks>}
         backbone_out["point_inputs_per_frame"] = {}  # {frame_idx: <input_points>}
         backbone_out["valid_box_mask_pairs"] = {}  # {frame_idx: <input_points>}
+
+        if phase == 'val':
+            noise = 0.0
+        elif phase == 'train':
+            noise = 0.1
 
         for t in init_cond_frames:
             if not use_pt_input:
@@ -508,7 +536,7 @@ class SAM2Train(SAM2Base):
                         gt_masks_per_frame[t],
                         is_provide_box=is_provide_box, 
                         boxes=valid_box_mask_pairs[t], # add by bryce
-                        noise=0.1,
+                        noise=noise, # 0.0; changed by bryce
                     )
                 else:
                     # (here we only sample **one initial point** on initial conditioning frames from the
@@ -562,7 +590,7 @@ class SAM2Train(SAM2Base):
                 vision_pos_embeds,
                 feat_sizes,
             ) = self._prepare_backbone_features(backbone_out)
-
+        
         # Starting the stage loop
         num_frames = backbone_out["num_frames"]
         init_cond_frames = backbone_out["init_cond_frames"]
@@ -595,7 +623,8 @@ class SAM2Train(SAM2Base):
                 )
 
             # Get output masks based on this frame's prompts and previous memory
-            current_out = self.track_step(
+            # current_out = self.track_step_MaskDINO(  # changed by bryce; 
+            current_out = self.track_step(  # changed by bryce; 
                 frame_idx=stage_id,
                 is_init_cond_frame=stage_id in init_cond_frames,
                 current_vision_feats=current_vision_feats,
@@ -608,6 +637,7 @@ class SAM2Train(SAM2Base):
                 output_dict=output_dict,
                 num_frames=num_frames,
             )
+
             # Append the output, depending on whether it's a conditioning frame
             add_output_as_cond_frame = stage_id in init_cond_frames or (
                 self.add_all_frames_to_correct_as_cond
@@ -674,6 +704,7 @@ class SAM2Train(SAM2Base):
             obj_ptr, # (3, 256)
             object_score_logits, # (3, 1)
             aux_masks_list,
+            aux_object_score_logits_list,
         ) = sam_outputs
 
         current_out["multistep_pred_masks"] = low_res_masks
@@ -684,6 +715,7 @@ class SAM2Train(SAM2Base):
         current_out["multistep_point_inputs"] = [point_inputs]
         current_out["multistep_object_score_logits"] = [object_score_logits]
         current_out["multistep_aux_pred_multimasks"] = aux_masks_list
+        current_out["multistep_aux_object_score_logits"] = aux_object_score_logits_list
 
         # Optionally, sample correction points iteratively to correct the mask
         if frame_idx in frames_to_add_correction_pt:
@@ -727,6 +759,43 @@ class SAM2Train(SAM2Base):
             object_score_logits,
             current_out,
         )
+        return current_out
+
+    def track_step_MaskDINO(
+        self,
+        frame_idx,
+        is_init_cond_frame,
+        current_vision_feats,
+        current_vision_pos_embeds,
+        feat_sizes,
+        point_inputs,
+        mask_inputs,
+        output_dict,
+        num_frames,
+        track_in_reverse=False,  # tracking in reverse time order (for demo usage)
+        run_mem_encoder=False,  # Whether to run the memory encoder on the predicted masks. # changed by bryce
+        prev_sam_mask_logits=None,  # The previously predicted SAM mask logits.
+        frames_to_add_correction_pt=None,
+        gt_masks=None,
+    ):
+        if frames_to_add_correction_pt is None:
+            frames_to_add_correction_pt = []
+        current_out, sam_outputs, high_res_features, pix_feat = self._track_step(
+            frame_idx,
+            is_init_cond_frame,
+            current_vision_feats,
+            current_vision_pos_embeds,
+            feat_sizes,
+            point_inputs,
+            mask_inputs,
+            output_dict,
+            num_frames,
+            track_in_reverse,
+            prev_sam_mask_logits,
+        )
+
+        current_out["pred_masks"] = sam_outputs
+
         return current_out
 
     def _iter_correct_pt_sampling(
@@ -828,7 +897,7 @@ class SAM2Train(SAM2Base):
 
         # Initialize the final predictions
         final_classes = torch.argmax(pred_image_classify_scores, dim=1)
-        # print(final_classes)
+        # print("inital prediction:", final_classes)
         
         # 第二步：处理第 6 类的数量
         # 统计当前第 6 类的数量
@@ -886,7 +955,58 @@ class SAM2Train(SAM2Base):
             # 填补 indices_to_reserve
             indices_to_reserve.extend(sorted_indices_of_sixes[:num_to_fill])
 
-        # print(final_classes)
+        # print("proceed prediction:", final_classes)
         # print(pred_image_classify_scores)
 
         return final_classes, indices_to_reserve
+    
+    def visualize_semantic_segmentation(self, tensor, save_path="output.png"):
+        """
+        可视化语义分割结果，将 (N, 1024, 1024) 的张量可视化为 N 张子图，并保存到一张大图上。
+
+        参数:
+            tensor (torch.Tensor): 输入的张量，形状为 (N, 1024, 1024)，像素值为 0/1/2/3。
+            save_path (str): 保存图像的路径，默认为 "output.png"。
+        """
+        # 确保输入张量的形状正确
+        assert tensor.ndim == 3, "输入张量的形状必须为 (N, 1024, 1024)"
+
+        num_images, h, w = tensor.shape # 获取图像数量
+        rows = int(np.ceil(np.sqrt(num_images)))  # 计算子图的行数
+        cols = int(np.ceil(num_images / rows))    # 计算子图的列数
+
+        # 定义类别对应的颜色映射
+        cmap = plt.cm.get_cmap('viridis', 4)  # 4 个类别 (0, 1, 2, 3)
+        class_colors = {
+            0: cmap(0),  # 类别 0 的颜色
+            1: cmap(1),  # 类别 1 的颜色
+            2: cmap(2),  # 类别 2 的颜色
+            3: cmap(3),  # 类别 3 的颜色
+        }
+
+        # 创建一个大图，动态调整子图布局
+        fig, axes = plt.subplots(rows, cols, figsize=(cols * 5, rows * 5))
+        axes = axes.ravel()  # 将二维的 axes 展平为一维
+
+        # 遍历每个子图并绘制
+        for i in range(num_images):
+            ax = axes[i]
+            img = tensor[i].cpu().numpy()  # 将张量转换为 NumPy 数组
+            colored_img = np.zeros((h, w, 3))  # 创建一个 RGB 图像
+
+            # 根据类别值填充颜色
+            for class_id, color in class_colors.items():
+                colored_img[img == class_id] = color[:3]  # 只取 RGB 值，忽略 alpha
+
+            ax.imshow(colored_img)
+            ax.set_title(f"Image {i+1}")
+            ax.axis('off')  # 关闭坐标轴
+        
+        # 隐藏多余的子图
+        for i in range(num_images, rows * cols):
+            axes[i].axis('off')
+        
+        # 调整布局并保存图像
+        plt.tight_layout()
+        plt.savefig(save_path)
+        plt.close()  # 关闭图像释放内存

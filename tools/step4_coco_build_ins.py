@@ -7,12 +7,14 @@ from pycocotools import mask as mask_utils
 from tqdm import tqdm
 
 # train or test root, containing the dirs:/JPEGImages, /Annotaions, /Json
-root_dir = "/home/jinghao/projects/dental_plague_detection/dataset/2025_revised_for_training_split/train"
+mode = "test" 
+root_dir = f"/home/jinghao/projects/dental_plague_detection/dataset/2025_May_revised_training_split/{mode}"
+root_dir = '/home/jinghao/projects/dental_plague_detection/dataset/2025_May_revised_training_split/test_2025_July_revised/'
+output_name = f"{mode}_ins_ToI"
 
 images_dir = os.path.join(root_dir, "JPEGImages")
 annotations_dir = os.path.join(root_dir, "Json")
 
-output_name = "train_ins"
 
 coco_data = {
     "info": {
@@ -84,6 +86,21 @@ class_name_to_idx_map = {'51': 0, '52': 1, '53': 2, '54': 3, '55': 4,
 
                          }
 
+# img_angle_id2ToI_map = {1: [51, 52, 61, 62, 11, 21], 
+#                         2: [71, 72, 81, 82, 31, 41, 'doubleteeth'], 
+#                         3: [53, 54, 55, 16], 
+#                         4: [83, 84, 85, 46,], 
+#                         5: [63, 64, 65, 26], 
+#                         6: [73, 74, 75, 36,], 
+#                         }
+img_angle_id2ToI_map = {1: [0, 1, 5, 6, 20, 22], 
+                        2: [10, 11, 15, 16, 24, 26, 28], 
+                        3: [2, 3, 4, 21], 
+                        4: [17, 18, 19, 27], 
+                        5: [7, 8, 9, 23], 
+                        6: [12, 13, 14, 25], 
+                        }
+
 polyg_tooth_match_issues = []
 poly_shape_not_valid = []
 
@@ -111,6 +128,17 @@ def get_annotations(json_path, image_id, annotation_id):
         }
         for shape in shapes if shape['shape_type'] == 'rectangle' and not shape['label'].startswith('mouth')
     ]
+
+    # filter ToI (Teeth of Interest); add by bryce
+    img_class_id = int([shape['label'] for shape in shapes if shape['shape_type'] == 'rectangle' and shape['label'].startswith('mouth')][0].split('mouth_')[1])
+    
+    teeth_ToI_list = []
+    for _box in teeth:
+        teeth_ToI_box_id = img_angle_id2ToI_map[img_class_id]
+        if class_name_to_idx_map[_box['label']] in teeth_ToI_box_id:
+            teeth_ToI_list.append(_box)
+        
+    teeth = teeth_ToI_list
 
     annotations = []
     for polygon in polygons:
@@ -151,6 +179,10 @@ def get_annotations(json_path, image_id, annotation_id):
             matches.sort(key=lambda x: x["intersection_area"], reverse=True)
             best_match = matches[0]
             second_best = matches[1] if len(matches) > 1 else None
+
+            # filter ToI (Teeth of Interest); add by bryce
+            if best_match["intersection_area"] / polygon_area < 0.90:
+                continue
 
             if best_match["intersection_area"] / polygon_area < 0.97:
                 relative_path = os.path.relpath(json_path, root_dir)
@@ -237,6 +269,7 @@ def save_csv(data, output_path, fieldnames):
 
 
 output_coco_path = os.path.join(root_dir, f"{output_name}.json")
+
 save_coco_file(output_coco_path)
 
 save_csv(polyg_tooth_match_issues, os.path.join(root_dir, f"{output_name}_polyg_tooth_match_Issues.csv"),

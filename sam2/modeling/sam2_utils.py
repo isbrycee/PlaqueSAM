@@ -15,6 +15,7 @@ import torch.nn.functional as F
 
 from sam2.utils.misc import mask_to_box
 import math
+import matplotlib.pyplot as plt
 
 def select_closest_cond_frames(frame_idx, cond_frame_outputs, max_cond_frame_num):
     """
@@ -214,6 +215,56 @@ def sample_box_points(
         box_labels = box_labels.reshape(B, -1) # size(1,12)
     return box_coords, box_labels
 
+def visualize_semantic_segmentation(tensor, save_path="output.png"):
+        """
+        可视化语义分割结果，将 (N, 1024, 1024) 的张量可视化为 N 张子图，并保存到一张大图上。
+
+        参数:
+            tensor (torch.Tensor): 输入的张量，形状为 (N, 1024, 1024)，像素值为 0/1/2/3。
+            save_path (str): 保存图像的路径，默认为 "output.png"。
+        """
+        # 确保输入张量的形状正确
+        assert tensor.ndim == 3, "输入张量的形状必须为 (N, 1024, 1024)"
+
+        num_images, h, w = tensor.shape # 获取图像数量
+        rows = int(np.ceil(np.sqrt(num_images)))  # 计算子图的行数
+        cols = int(np.ceil(num_images / rows))    # 计算子图的列数
+
+        # 定义类别对应的颜色映射
+        cmap = plt.cm.get_cmap('viridis', 4)  # 4 个类别 (0, 1, 2, 3)
+        class_colors = {
+            0: cmap(0),  # 类别 0 的颜色
+            1: cmap(1),  # 类别 1 的颜色
+            2: cmap(2),  # 类别 2 的颜色
+            3: cmap(3),  # 类别 3 的颜色
+        }
+
+        # 创建一个大图，动态调整子图布局
+        fig, axes = plt.subplots(rows, cols, figsize=(cols * 5, rows * 5))
+        axes = axes.ravel()  # 将二维的 axes 展平为一维
+
+        # 遍历每个子图并绘制
+        for i in range(num_images):
+            ax = axes[i]
+            img = tensor[i].cpu().numpy()  # 将张量转换为 NumPy 数组
+            colored_img = np.zeros((h, w, 3))  # 创建一个 RGB 图像
+
+            # 根据类别值填充颜色
+            for class_id, color in class_colors.items():
+                colored_img[img == class_id] = color[:3]  # 只取 RGB 值，忽略 alpha
+
+            ax.imshow(colored_img)
+            ax.set_title(f"Image {i+1}")
+            ax.axis('off')  # 关闭坐标轴
+
+        # 隐藏多余的子图
+        for i in range(num_images, rows * cols):
+            axes[i].axis('off')
+        
+        # 调整布局并保存图像
+        plt.tight_layout()
+        plt.savefig(save_path)
+
 def generate_masks_vectorized(boxes_tensor, image_wh):
     """
     向量化实现边界框到掩码的批量转换
@@ -222,10 +273,9 @@ def generate_masks_vectorized(boxes_tensor, image_wh):
     # 确保输入设备一致
     device = boxes_tensor.device
     w, h = image_wh
-    
     # 预处理坐标 (向量化排序和裁剪)
-    x_coords = boxes_tensor[..., 0]  # [6, 2]
-    y_coords = boxes_tensor[..., 1]
+    x_coords = boxes_tensor[..., 1]  # [6, 2]
+    y_coords = boxes_tensor[..., 0]
     x_sorted, _ = torch.sort(x_coords, dim=1)
     y_sorted, _ = torch.sort(y_coords, dim=1)
     
@@ -265,7 +315,7 @@ def sample_batched_one_box_points(
 ) -> Tuple[np.array, np.array]:
     """
     Sample a noised version of the top left and bottom right corners of a given `bbox`
-
+    
     Inputs:
     - masks: [B, 1, H, W] boxes, dtype=torch.Tensor
     - noise: noise as a fraction of box width and height, dtype=float
@@ -279,14 +329,14 @@ def sample_batched_one_box_points(
     num_class_in_mask, B, H, W = masks.shape
     
     if not is_provide_box: # in case of no box prompt input; overwise will raise error
-        print('error')
+        print('error: no box prompt')
         # box_coords = mask_to_box(masks) # size [3, 1, 4]
         # box_labels = torch.tensor(
         #     [top_left_label, bottom_right_label], dtype=torch.int, device=device
         # ).repeat(B) # [2,3,2,3,2,3]
         box_coords = torch.zeros(1, 1, 2, device=device)
         box_labels = -torch.ones(1, 1, dtype=torch.int32, device=device)
-        box_masks = generate_masks_vectorized(box_coords, (W, H))
+        box_masks = torch.zeros((1, W, H), device=device)
         
         return box_coords, box_labels, box_masks
     else:

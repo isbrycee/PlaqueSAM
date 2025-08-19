@@ -134,7 +134,7 @@ class PalettisedPNGSegmentLoader:
 
         object_id = pd.unique(masks.flatten())
 
-        # object_id = object_id[object_id != 0]  # raw: remove background (0); but changed by bryce (for softmax); the bug source ??? 
+        object_id = object_id[object_id != 0]  # raw: remove background (0); but changed by bryce (for softmax); the bug source ??? 
 
         # convert into N binary segmentation masks
         binary_segments = {}
@@ -293,7 +293,15 @@ class JsonBBoxLoader:
                             '82/83':28,
                             '81/82': 28,
                             }
-        
+        self.image_angle_to_ToI_boxes_mapping = {
+            '1': [0, 1, 5, 6, 20, 22, 28, 29],
+            '2': [10, 11, 15, 16, 24, 26, 28, 29],
+            '3': [2, 3, 4, 21, 28, 29],
+            '4': [17, 18, 19, 27, 28, 29],
+            '5': [7, 8, 9, 23, 28, 29],
+            '6': [12, 13, 14, 25, 28, 29],
+        }
+
         self.box_mask_pairs_dict = box_mask_pairs_dict
   
     def load(self, frame_id):
@@ -314,7 +322,10 @@ class JsonBBoxLoader:
         className_for_image_classify = -1
         with open(json_path, 'r') as f:
             json_info = json.load(f)
+            # get image angle label
             for item in json_info['shapes']:
+                if className_for_image_classify != -1:
+                    break
                 if item['shape_type'] == 'rectangle':
                     className = item['label']
                     # filter the box for image classification
@@ -326,22 +337,30 @@ class JsonBBoxLoader:
                         else:
                             print('get className_for_image_classify error!!!')
                             className_for_image_classify = -1
+            # get image all bounding box labels
+
+            for item in json_info['shapes']:
+                if item['shape_type'] == 'rectangle':
+                    className = item['label']
+                    if 'mouth' in className:
                         continue
                     boxXYXY = item['points']
-                    
-                    className = self.class_name_to_idx_map[className]
-                    className_to_boxXYXY[className] = boxXYXY
+                    class_id = self.class_name_to_idx_map[className]
+                    if class_id in self.image_angle_to_ToI_boxes_mapping[className_for_image_classify]:
+                        className_to_boxXYXY[class_id] = boxXYXY
         
         assert className_for_image_classify != -1
         # modify the self.box_mask_pairs_dict (e.g., recover the human-labeled box rather than the nearly bounding box of mask)
         box_mask_pairs_dict_return = {}
         key_for_box_mask_pairs_dict = self.video_json_root.split('/')[-1] + '/' + str(frame_id).zfill(3)
+        # self.box_mask_pairs_dict is derived from coco_ins_seg.json
+        # Since the returned dict is constructed from the self.box_mask_pairs_dict,
+        # the trained bounding box depends on the coco_ins_seg.json rather than Json folder. 
         if key_for_box_mask_pairs_dict in self.box_mask_pairs_dict.keys():
             for k, v in self.box_mask_pairs_dict[key_for_box_mask_pairs_dict].items():
                 new_box_coors_xyxy = className_to_boxXYXY[k]
                 new_box_coors_xyxy = [item for sublist in new_box_coors_xyxy for item in sublist]
                 old_box_coors_xywh, mask = v
-                
                 box_mask_pairs_dict_return[k] = (new_box_coors_xyxy, mask)
         return className_to_boxXYXY, className_for_image_classify, box_mask_pairs_dict_return
 

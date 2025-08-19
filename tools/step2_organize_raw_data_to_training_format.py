@@ -200,13 +200,13 @@ def organize_data(root_dir, new_folder):
 root_directories = ['/home/jinghao/projects/dental_plague_detection/dataset/27_1_2025_revision/12_5/',
                     '/home/jinghao/projects/dental_plague_detection/dataset/27_1_2025_revision/9_26/' ]
 
-save_root_path = '/home/jinghao/projects/dental_plague_detection/dataset/2025_revised_for_training_all_bak'
+save_root_path = '/home/jinghao/projects/dental_plague_detection/dataset/2025_May_revised_training_split/test_2025_July_revised/'
 
 # root_directories = ['/home/jinghao/projects/dental_plague_detection/dataset/revised_0225/1111']
 
-root_directories = "/home/jinghao/projects/dental_plague_detection/dataset/2025_revised_all_add_blur_imgs_bak/"
+root_directories = "/home/jinghao/projects/dental_plague_detection/dataset/testset/"
 # root_directories = ["/home/jinghao/projects/dental_plague_detection/dataset/revised_0225/10_10",  ]
-date = ['9_26', '10_8/', '10_10', '10_24', '10_31', '11_3', '11_7', '11_12', '11_19', '11_20' , '12_3', '12_5']
+date = [ '9_26', '10_8/', '10_10', '10_24', '10_31', '11_3', '11_7', '11_12', '11_19', '11_20', '12_3', '12_5']
 
 for root_dir in date:
     single_path = os.path.join(root_directories, root_dir)

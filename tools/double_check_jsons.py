@@ -3,6 +3,7 @@ from pycocotools.cocoeval import COCOeval
 from pycocotools.coco import COCO
 import numpy as np
 import json
+from tqdm import tqdm  # 进度条工具，可选
 
 # # 加载你的原始预测结果
 # with open(maskdino_pred_json_path) as f:
@@ -11,7 +12,7 @@ import json
 # # 降低置信度阈值到0.1（保留更多预测）
 # filtered_preds = [ann for ann in your_data if ann["score"] > 0.5]
 # print(f"调整后预测数量: {len(filtered_preds)}")
-from tqdm import tqdm  # 进度条工具，可选
+
 
 def box_iou(box1, box2):
     """
@@ -105,9 +106,9 @@ def apply_nms_to_json(input_path, output_path, iou_thresh=0.5, score_thresh=0.00
 #     score_thresh=0.3  # 保留所有预测参与NMS（后续可再过滤）
 # )
 
-gt_json_path="/home/jinghao/projects/logs_tiny_1024_50e_lr1e-4_bblr5e-5_wd_4scales_twostage_100queries/saved_jsons/_gt_val.json"
-our_pred_json_path="/home/jinghao/projects/logs_tiny_1024_50e_lr1e-4_bblr5e-5_wd_4scales_twostage_100queries/saved_jsons/_pred_val_epoch_005.json"
-maskdino_pred_json_path="/home/jinghao/projects/dental_plague_detection/MaskDINO/output_maskdino_r50_iter8w_dental_plague_ins_seg/inference/coco_instances_results_over_0.3_nms_0.5.json"
+gt_json_path="/home/jinghao/projects/dental_plague_detection/Self-PPD/logs_tiny_1024_50e_lr1e-4_bblr5e-5_wd_4scales_twostage_100queries_test_512_ToI/saved_jsons/_gt_val.json"
+our_pred_json_path="/home/jinghao/projects/dental_plague_detection/Self-PPD/logs_tiny_1024_50e_lr1e-4_bblr5e-5_wd_4scales_twostage_100queries_test_512_ToI/saved_jsons/_pred_val_epoch_200.json"
+maskdino_pred_json_path='/home/jinghao/projects/dental_plague_detection/MaskDINO/output/inference/coco_instances_results_score_over_0.5.json'
 
 # 加载GT
 coco_gt = COCO(gt_json_path)
@@ -133,40 +134,41 @@ for iou_thr in [0.5, 0.75, 0.95]:
 
 # 按类别分析
 
-# categories = coco_gt.loadCats(coco_gt.getCatIds())
+categories = coco_gt.loadCats(coco_gt.getCatIds())
 
-# for cat in categories:
-#     cat_id = cat['id']
-#     print(f"\nCategory: {cat['name']}")
+for cat in categories:
+    cat_id = cat['id']
+    print(f"\nCategory: {cat['name']}")
     
-#     # 你的方法
-#     coco_eval1 = COCOeval(coco_gt, coco_dt1, 'segm')
-#     coco_eval1.params.catIds = [cat_id]
-#     coco_eval1.evaluate()
-#     coco_eval1.accumulate()
-#     coco_eval1.summarize()
+    # 你的方法
+    coco_eval1 = COCOeval(coco_gt, coco_dt1, 'segm')
+    coco_eval1.params.catIds = [cat_id]
+    coco_eval1.evaluate()
+    coco_eval1.accumulate()
+    coco_eval1.summarize()
     
-#     # 其他方法
-#     coco_eval2 = COCOeval(coco_gt, coco_dt2, 'segm')
-#     coco_eval2.params.catIds = [cat_id]
-#     coco_eval2.evaluate()
-#     coco_eval2.accumulate()
-#     coco_eval2.summarize()
+    # 其他方法
+    coco_eval2 = COCOeval(coco_gt, coco_dt2, 'segm')
+    coco_eval2.params.catIds = [cat_id]
+    coco_eval2.evaluate()
+    coco_eval2.accumulate()
+    coco_eval2.summarize()
 
-# print(f"Your method预测数量: {len(coco_dt1.dataset['annotations'])}")
-# print(f"Other method预测数量: {len(coco_dt2.dataset['annotations'])}")
+print(f"gt 数量: {len(coco_gt.dataset['annotations'])}")
+print(f"Your method预测数量: {len(coco_dt1.dataset['annotations'])}")
+print(f"Other method预测数量: {len(coco_dt2.dataset['annotations'])}")
 
-# import numpy as np
-# import matplotlib.pyplot as plt
+import numpy as np
+import matplotlib.pyplot as plt
 
-# # 从预测结果中提取置信度
-# your_scores = [ann['score'] for ann in coco_dt1.dataset['annotations']]
-# other_scores = [ann['score'] for ann in coco_dt2.dataset['annotations']]
+# 从预测结果中提取置信度
+your_scores = [ann['score'] for ann in coco_dt1.dataset['annotations']]
+other_scores = [ann['score'] for ann in coco_dt2.dataset['annotations']]
 
-# plt.hist(your_scores, bins=50, alpha=0.5, label='Your Method')
-# plt.hist(other_scores, bins=50, alpha=0.5, label='MaskDNIO')
-# plt.legend()
-# plt.xlabel('Confidence Score')
-# plt.ylabel('Count')
-# plt.title('Confidence Score Distribution')
-# plt.savefig('Confidence_dist.jpg')
+plt.hist(your_scores, bins=50, alpha=0.5, label='Your Method')
+plt.hist(other_scores, bins=50, alpha=0.5, label='MaskDNIO')
+plt.legend()
+plt.xlabel('Confidence Score')
+plt.ylabel('Count')
+plt.title('Confidence Score Distribution')
+plt.savefig('Confidence_dist.jpg')

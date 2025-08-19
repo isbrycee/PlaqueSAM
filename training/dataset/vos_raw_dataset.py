@@ -12,7 +12,8 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 import pandas as pd
-
+import json
+import base64
 import torch
 
 from iopath.common.file_io import g_pathmgr
@@ -33,7 +34,7 @@ from collections import defaultdict
 import numpy as np
 import cv2
 
-from training.utils.mask_RLE_utils import encode_mask_rle, decode_mask_rle
+from training.utils.mask_RLE_utils import encode_mask_rle, decode_mask_rle, decode_str
 
 
 
@@ -70,6 +71,7 @@ class PNGRawDataset(VOSRawDataset):
         gt_folder,
         gt_box_folder, # add by bryce
         gt_ins_seg_json, # add by bryce
+        gt_ins_box2innerMask_json_path, # add by bryce
         file_list_txt=None,
         excluded_videos_list_txt=None,
         sample_rate=1,
@@ -82,6 +84,7 @@ class PNGRawDataset(VOSRawDataset):
         self.gt_folder = gt_folder
         self.gt_box_folder = gt_box_folder
         self.gt_ins_seg_json_path = gt_ins_seg_json
+        self.gt_ins_box2innerMask_json_path = gt_ins_box2innerMask_json_path
         self.sample_rate = sample_rate
         self.is_palette = is_palette
         self.single_object_mode = single_object_mode
@@ -125,7 +128,7 @@ class PNGRawDataset(VOSRawDataset):
         
         # add by bryce
         # {10_10_11/005:{1:((x1,y1,w,h), numpy(mask))}, ...}
-        self.box_mask_pairs_dict = self._load_box2innerMask_per_img(self.gt_ins_seg_json_path)
+        self.box_mask_pairs_dict = self._load_box2innerMask_per_img(self.gt_ins_seg_json_path, self.gt_ins_box2innerMask_json_path)
 
     def visualize_masks(self, result_dict, save_dir, color_map=None):
         """
@@ -172,8 +175,49 @@ class PNGRawDataset(VOSRawDataset):
             cv2.imwrite(os.path.join(save_dir, filename), canvas)
             print(f'save to {filename}')
 
+
+    def _load_box2innerMask_json(self, json_path):
+        """
+        从JSON文件加载并恢复原始数据结构
+        
+        Args:
+            json_path: 保存的JSON文件路径
+        Returns:
+            与原函数返回结构相同的字典
+        """
+        with open(json_path, 'r') as f:
+            loaded_data = json.load(f)
+        
+        result_dict = {}
+        for img_key, img_data in loaded_data.items():
+            restored_img = {}
+            for merged_id_str, entry in img_data.items():
+                merged_id = int(merged_id_str)
+                bbox = entry['bbox']
+                mask_info = entry['mask']
+                
+                if mask_info['type'] == 'ndarray':
+                    # 恢复numpy数组
+                    mask = np.array(
+                        mask_info['data'], 
+                        dtype=np.dtype(mask_info['dtype'])
+                    )
+                elif mask_info['type'] == 'rle':
+                    # 恢复RLE格式
+                    mask = {
+                        'rle': mask_info['rle'],
+                        'shape': mask_info['shape']
+                    }
+                else:
+                    raise ValueError("Unknown mask type in JSON")
+                
+                restored_img[merged_id] = (bbox, mask)
+            result_dict[img_key] = restored_img
+        
+        return result_dict
+
     # add by bryce
-    def _load_box2innerMask_per_img(self, gt_ins_seg_json_path):
+    def _load_box2innerMask_per_img(self, gt_ins_seg_json_path, gt_ins_box2innerMask_json_path=None):
         """
         load box-semantic mask from the coco_ins_seg_json
         Args:
@@ -181,6 +225,10 @@ class PNGRawDataset(VOSRawDataset):
         Return:
             box-mask pairs: dict('10_20_1/001': numpy(1, img_w, img_h))
         """
+
+        if gt_ins_box2innerMask_json_path and os.path.isfile(gt_ins_box2innerMask_json_path):
+            return self._load_box2innerMask_json(gt_ins_box2innerMask_json_path)
+
         # 加载COCO数据集
         coco = COCO(gt_ins_seg_json_path)
         
@@ -222,7 +270,6 @@ class PNGRawDataset(VOSRawDataset):
                     ann_mask = coco.annToMask(ann)
                     combined_mask = np.logical_or(combined_mask, ann_mask)
                     class_mask[ann_mask == 1] = sub_value  # 最后出现的会覆盖之前的
-                    
                     
                 # 计算外接矩形
                 if np.any(combined_mask):

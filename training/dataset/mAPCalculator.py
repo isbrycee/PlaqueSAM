@@ -4,19 +4,23 @@ import os
 import matplotlib.pyplot as plt
 from torchvision.utils import draw_bounding_boxes
 from torchvision.transforms.functional import to_pil_image
-
+import json
 
 # 定义一个类来收集数据和计算 mAP
 class MAPCalculator:
-    def __init__(self, class_agnostic=False):
+    def __init__(self, saved_jsons_dir, class_agnostic=False):
         self.class_agnostic =class_agnostic
         # 初始化 mAP 计算器
         self.metric = MeanAveragePrecision(class_metrics=True)
         # 存储所有预测和标注信息
         self.all_predictions = []
         self.all_targets = []
-        self.target_labels = []
-        self.pred_labels = []
+        # self.target_labels = []
+        # self.pred_labels = []
+        self.all_targets_for_saved_json_for_visualization = []
+        self.all_predictions_for_saved_json_for_visualization = []
+        self.all_targets_for_saved_json_for_calculate_metrics = []
+        self.all_predictions_for_saved_json_for_calculate_metrics = []
         class_name_to_idx_map = {'51':0, '52':1, '53':2, '54':3, '55':4, 
                             '61':5, '62':6, '63':7, '64':8, '65':9, 
                             '71':10, '72':11, '73':12, '74':13, '75':14,
@@ -31,6 +35,7 @@ class MAPCalculator:
                             'crown': 29,
                             }
         self.class_idx_to_name_map = dict(zip(class_name_to_idx_map.values(), class_name_to_idx_map.keys()))
+        self.saved_jsons_dir = saved_jsons_dir
         
     def update(self, preds, targets, img_batch, video_name, is_visualized=False):
         """
@@ -45,10 +50,44 @@ class MAPCalculator:
             for target in targets:
                 target["labels"] = torch.zeros_like(target["labels"])  # 将标注框的类别设置为 0
         
+        # for pred in preds:
+        #     self.pred_labels += pred["labels"].cpu().numpy().tolist()  # 将预测框的类别设置为 0
+        # for target in targets:
+        #     self.target_labels += target["labels"].cpu().numpy().tolist()  # 将预测框的类别设置为 0
+
+        ############## process the preds data for save them into coco format ##############
+        preds_cpu = []
         for pred in preds:
-            self.pred_labels += pred["labels"].cpu().numpy().tolist()  # 将预测框的类别设置为 0
+            preds_cpu_item = {}
+            preds_cpu_item['labels'] = pred["labels"].cpu().numpy().tolist()
+            preds_cpu_item['scores'] = pred["scores"].cpu().numpy().tolist()
+            preds_cpu_item['boxes'] = pred["boxes"].cpu().numpy().tolist()
+            preds_cpu.append(preds_cpu_item)
+
+        
+        for batch_idx, pred in enumerate(preds_cpu):
+            for box_idx, each_box_categpry in enumerate(pred["labels"]):
+                file_name = video_name+f'/00{batch_idx+1}.jpg'
+                self.all_predictions_for_saved_json_for_visualization.append(
+                    {"image_id": -1, "file_name": file_name, "category": self.class_idx_to_name_map[each_box_categpry], "score": round(pred["scores"][box_idx], 2), "bbox": pred["boxes"][box_idx]}
+                )
+
+        targets_cpu = []
         for target in targets:
-            self.target_labels += target["labels"].cpu().numpy().tolist()  # 将预测框的类别设置为 0
+            targets_cpu_item = {}
+            targets_cpu_item['labels'] = target["labels"].cpu().numpy().tolist()
+            targets_cpu_item['boxes'] = target["boxes"].cpu().numpy().tolist()
+            targets_cpu.append(targets_cpu_item)
+
+        for batch_idx, target in enumerate(targets_cpu):
+            for box_idx, each_box_categpry in enumerate(target["labels"]):
+                file_name = video_name+f'/00{batch_idx+1}.jpg'
+                self.all_targets_for_saved_json_for_visualization.append(
+                    {"image_id": -1, "file_name": file_name, "category": self.class_idx_to_name_map[each_box_categpry], "bbox": target["boxes"][box_idx]}
+                )
+        self.all_targets_for_saved_json_for_calculate_metrics.extend(targets)
+        self.all_predictions_for_saved_json_for_calculate_metrics.extend(preds)
+        ############## END process the preds data for save them into coco format ##############
 
         self.all_predictions.extend(preds)
         self.all_targets.extend(targets)
@@ -57,15 +96,43 @@ class MAPCalculator:
             output_dir = '/home/jinghao/projects/dental_plague_detection/Self-PPD/bad_visual/'
             self.visualize_and_save(img_batch, output_dir, video_name.replace('/', '_'), preds, targets, self.class_idx_to_name_map, max_images=10000)
 
-    def compute(self):
+    def compute_and_save_json(self, epoch, is_save_json_for_boxes_prediction=False):
         """
         计算整个数据集的 mAP。
         """
-        self.metric.update(self.all_predictions, self.all_targets)
         # print(set(self.pred_labels))
         # print(set(self.target_labels))
+        if is_save_json_for_boxes_prediction:
+            if not os.path.exists(self.saved_jsons_dir):
+                os.makedirs(self.saved_jsons_dir)
+
+            # saved for visualization
+            _gt_json_path = os.path.join(self.saved_jsons_dir, "_box_gt_val_for_visualization.json")
+
+            with open(_gt_json_path, "w") as f:
+                json.dump(self.all_targets_for_saved_json_for_visualization, f)
+            
+            epoch = str(epoch).zfill(3)
+            _pred_json_path = os.path.join(self.saved_jsons_dir, f"_box_pred_val_epoch_{epoch}_for_visualization.json")
+
+            with open(_pred_json_path, "w") as f: 
+                json.dump(self.all_predictions_for_saved_json_for_visualization, f)
+
+            # saved for calculate metrics
+            _gt_json_path = os.path.join(self.saved_jsons_dir, "_box_gt_val_for_calculate_metrics.pt")
+            torch.save(self.all_targets_for_saved_json_for_calculate_metrics, _gt_json_path)
+
+            epoch = str(epoch).zfill(3)
+            _pred_json_path = os.path.join(self.saved_jsons_dir, f"_box_pred_val_epoch_{epoch}_for_calculate_metrics.pt")
+            torch.save(self.all_predictions_for_saved_json_for_calculate_metrics, _pred_json_path)
+
+            # import pdb; pdb.set_trace()
+        
+        self.metric.update(self.all_predictions, self.all_targets)
+
         return self.metric.compute()
-    
+
+
     def denormalize(self, tensor, mean, std):
         """
         对归一化后的图像进行反归一化，恢复原始像素值范围。
@@ -178,5 +245,7 @@ class MAPCalculator:
 
             if not set(pred_labels) == set(gt_labels):
                 plt.savefig(output_path, bbox_inches="tight")
+                print(f"bad predictions are saved in {output_path}")
 
             plt.close()
+            

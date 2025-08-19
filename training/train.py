@@ -36,7 +36,7 @@ def single_proc_run(local_rank, main_port, cfg, world_size):
         register_omegaconf_resolvers()
     except Exception as e:
         logging.info(e)
-
+    
     trainer = instantiate(cfg.trainer, _recursive_=False)
     trainer.run()
 

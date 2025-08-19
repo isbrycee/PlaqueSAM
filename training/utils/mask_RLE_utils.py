@@ -1,4 +1,19 @@
 import numpy as np
+import json
+import base64
+
+def encode_list(lst):
+    """
+    将整数列表编码成字符串
+    """
+    return ','.join([str(item) for item in lst])
+
+def decode_str(encoded_str):
+    """
+    将编码的字符串解码回整数列表
+    """
+    return list(map(int, encoded_str.split(',')))
+
 
 def encode_mask_rle(mask):
     """
@@ -33,8 +48,9 @@ def encode_mask_rle(mask):
 
     return {
         'shape': mask.shape,
-        'rle': encoded_rle.tolist()  # 转为 Python 列表
+        'rle': encode_list(encoded_rle.tolist())  # 转为 Python 列表
     }
+
 
 def decode_mask_rle(encoded):
     """
@@ -49,7 +65,7 @@ def decode_mask_rle(encoded):
         numpy.ndarray: 解码后的 2D numpy 数组。
     """
     shape = encoded['shape']
-    rle = np.array(encoded['rle'], dtype=int)
+    rle = np.array(decode_str(encoded['rle']), dtype=int)
 
     # 提取值与运行长度
     values = rle[0::2]
@@ -61,3 +77,27 @@ def decode_mask_rle(encoded):
     # 恢复为原始形状
     mask = flat_mask.reshape(shape)
     return mask
+
+
+# # 编码函数
+# def encode_list_to_base64(int_list):
+#     # 将整数列表转换为二进制
+#     binary_data = b''.join(int(num).to_bytes((num.bit_length() + 7) // 8, byteorder='big') for num in int_list)
+#     # 将二进制数据进行 Base64 编码
+#     return base64.b64encode(binary_data).decode('utf-8')
+
+# # 解码函数
+# def decode_base64_to_list(encoded_str):
+#     # Base64 解码为二进制数据
+#     binary_data = base64.b64decode(encoded_str)
+#     result = []
+#     idx = 0
+#     while idx < len(binary_data):
+#         # 逐步解析二进制数据为整数
+#         length = 0
+#         while idx + length < len(binary_data) and binary_data[idx + length] != 0:
+#             length += 1
+#         num = int.from_bytes(binary_data[idx:idx + length], byteorder='big')
+#         result.append(num)
+#         idx += length + 1
+#     return result

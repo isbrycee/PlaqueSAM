@@ -16,7 +16,7 @@ class TemplateFeatureExtractor:
     def _load_templates(self, folder_path):
         """加载并预处理模板图像"""
         transform = transforms.Compose([
-            transforms.Resize((1024, 1024)),
+            transforms.Resize((512, 512)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
         ])
@@ -24,7 +24,7 @@ class TemplateFeatureExtractor:
         templates = []
         # 按文件名排序读取图像
         for fname in sorted(os.listdir(folder_path)):
-            if fname.endswith('.jpg'):
+            if fname.endswith('.png'):
                 img = Image.open(os.path.join(folder_path, fname)).convert('RGB')
                 templates.append(transform(img))
         assert len(templates) == 6, "需要6个jpg模板文件"
@@ -34,8 +34,10 @@ class TemplateFeatureExtractor:
         """构建轻量级特征提取网络"""
         net = nn.Sequential(
             nn.Conv2d(3, 16, kernel_size=7, stride=4, padding=3),  # [16, 256, 256]
+            nn.BatchNorm2d(16, track_running_stats=False),
             nn.ReLU(inplace=True),
             nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),  # [32, 128, 128]
+            nn.BatchNorm2d(32, track_running_stats=False),
             nn.ReLU(inplace=True)
         )
         

@@ -130,7 +130,7 @@ class TwoWayTransformer(nn.Module):
             )
             aux_queries_list.append(queries)
             aux_keys_list.append(keys)
-
+        
         # Apply the final attention layer from the points to the image
         q = queries + point_embedding
         k = keys + image_pe
@@ -289,7 +289,7 @@ class Attention(nn.Module):
 
         out = self._recombine_heads(out)
         out = self.out_proj(out)
-
+        
         return out
 
 

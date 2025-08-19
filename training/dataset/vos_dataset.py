@@ -82,20 +82,23 @@ class VOSDataset(VisionDataset):
         """
         sampled_frames = sampled_frms_and_objs.frames
         sampled_object_ids = sampled_frms_and_objs.object_ids
-
+        
         images = []
+        img_size_list = []
         for_check = []
         rgb_images = load_images(sampled_frames)
         # Iterate over the sampled frames and store their rgb data and object data (bbox, segment)
         for frame_idx, frame in enumerate(sampled_frames):
             w, h = rgb_images[frame_idx].size
+            img_size_list.append((h, w))
             images.append(
                 Frame(
                     data=rgb_images[frame_idx],
                     objects=[],
-                    boxes={}, # add by bryce
+                    boxes=None, # add by bryce
                     image_classify=-1, # add by bryce
-                    box_mask_pairs={}, # add by bryce
+                    box_mask_pairs=None, # add by bryce
+                    size=(-1, -1), # add by bryce
                 )
             )
             # We load the gt segments associated with the current frame
@@ -108,7 +111,7 @@ class VOSDataset(VisionDataset):
                 boxes, image_classify_gt, box_mask_pairs = bbox_loader.load(frame.frame_idx)
                 for_check.append(image_classify_gt)
             for obj_id in sampled_object_ids:
-                # Extract the segment
+                # Extract the segment across different categories in one image
                 if obj_id in segments:
                     assert (
                         segments[obj_id] is not None
@@ -131,11 +134,12 @@ class VOSDataset(VisionDataset):
             images[frame_idx].boxes = boxes, # add by bryce
             images[frame_idx].image_classify = int(image_classify_gt)
             images[frame_idx].box_mask_pairs = box_mask_pairs
+            images[frame_idx].size = (h, w)
 
         return VideoDatapoint(
             frames=images,
             video_id=video.video_id,
-            size=(h, w),
+            size=img_size_list,
             video_name=video_name
         )
 

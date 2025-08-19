@@ -27,8 +27,51 @@ from scipy.ndimage import zoom
 
 import numpy as np
 from training.utils.mask_RLE_utils import encode_mask_rle, decode_mask_rle
-
+import matplotlib.pyplot as plt
+import cv2
 # add by bryce
+
+def visualize_single_dim_tensor(tensor, save_path="output.png"):
+        """
+        可视化语义分割结果，将 (512, 512) 的掩码张量可视化为彩色图像并保存。
+
+        参数:
+            tensor (torch.Tensor): 输入的张量，形状为 (512, 512)，像素值为 0/1/2/3.
+            save_path (str): 保存图像的路径，默认为 "output.png".
+        """
+        # 确保输入张量的形状正确
+        assert tensor.ndim == 2, "输入张量的形状必须为 (512, 512)"
+        h, w = tensor.shape
+        # 定义类别对应的颜色映射
+        cmap = plt.cm.get_cmap('viridis', 4)  # 4 个类别 (0, 1, 2, 3)
+        class_colors = {
+            0: cmap(0),  # 类别 0 的颜色 (RGB)
+            1: cmap(1),  # 类别 1 的颜色
+            2: cmap(2),  # 类别 2 的颜色
+            3: cmap(3),  # 类别 3 的颜色
+        }
+
+        # 创建画布和子图
+        fig, ax = plt.subplots(figsize=(5, 5))
+
+        # 将张量转换为 NumPy 数组
+        img = tensor.cpu().numpy()
+        colored_img = np.zeros((h, w, 3))  # 创建 RGB 图像
+
+        # 根据类别值填充颜色
+        for class_id, color in class_colors.items():
+            colored_img[img == class_id] = color[:3]  # 只取 RGB 值，忽略 alpha
+
+        # 可视化并关闭坐标轴
+        ax.imshow(colored_img)
+        ax.set_title("Tensor Segmentation Mask")
+        ax.axis('off')
+
+        # 调整布局并保存图像
+        plt.tight_layout()
+        plt.savefig(save_path, bbox_inches='tight', pad_inches=0)
+        plt.close()  # 关闭图像释放内存
+
 def flip_points_left_right(points, width):
     flipped_points = []
     for point in points:
@@ -70,6 +113,23 @@ def resize_rects(rects, orig_width, orig_height, new_width, new_height):
         resized_rects[name] = resized_points
     return resized_rects
 
+def resize_mask_numpy_opencv(mask, new_height, new_width):
+    """
+    使用 OpenCV 的最近邻插值缩放掩码
+    适用场景：需精准控制输出尺寸，性能要求高
+    """
+    # 关键参数 interpolation=cv2.INTER_NEAREST
+    resized_mask = cv2.resize(
+        mask.astype(np.uint8), 
+        (new_width, new_height),  # OpenCV 尺寸格式为 (width, height)
+        interpolation=cv2.INTER_NEAREST
+    )
+
+    # 恢复原始数据类型（例如 np.uint8 或 np.int32）
+    resized_mask = resized_mask.astype(mask.dtype)
+    assert np.isin(resized_mask, [0, 1, 2, 3]).all(), "非法值!"
+    return resized_mask
+
 
 def resize_rects_for_box_mask_pairs(rects, orig_width, orig_height, new_width, new_height):
     if isinstance(rects, tuple):
@@ -77,14 +137,16 @@ def resize_rects_for_box_mask_pairs(rects, orig_width, orig_height, new_width, n
     resized_rects = {}
     for name, points_mask_tuple in rects.items():
         points, encoded_mask = points_mask_tuple
+
         x1,y1,x2,y2 = points
         resized_points_x1_y1 = resize_points([[x1,y1]], orig_width, orig_height, new_width, new_height)
         resized_points_x2_y2 = resize_points([[x2,y2]], orig_width, orig_height, new_width, new_height)
         resized_points_list = resized_points_x1_y1[0] + resized_points_x2_y2[0]
-
+        
         decoded_mask = decode_mask_rle(encoded_mask)
-        resized_mask = F.resize(torch.from_numpy(decoded_mask)[None, None], (new_height, new_width)).squeeze().contiguous()
-        resized_encoded_mask = encode_mask_rle(np.asfortranarray(resized_mask.numpy()))
+        # visualize_single_dim_tensor(torch.from_numpy(decoded_mask))
+        resized_mask = resize_mask_numpy_opencv(decoded_mask, new_height, new_width)
+        resized_encoded_mask = encode_mask_rle(np.asfortranarray(resized_mask))
         resized_rects[name] = (resized_points_list, resized_encoded_mask)
     return resized_rects
 

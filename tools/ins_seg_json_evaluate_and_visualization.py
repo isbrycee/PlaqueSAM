@@ -6,6 +6,7 @@ from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 from skimage.measure import find_contours
 import cv2
+from PIL import Image
 
  # 定义颜色映射，每个类别有一个固定颜色
 np.random.seed(0)  # 确保颜色一致
@@ -44,12 +45,20 @@ def calculate_and_visualize_map(gt_json_path, pred_json_path, image_dir, output_
     
     # 可视化函数
     def visualize_masks(image_id):
+        # import pdb; pdb.set_trace()
         # 加载图片
         img_info = coco_gt.loadImgs(image_id)[0]
         img_path = os.path.join(image_dir, img_info['file_name'])
         img = cv2.imread(img_path)
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         
+        print('img_path:', img_path)
+        print('img_id:', image_id)
+        print('img_shape:', img.shape)
+
+        # if "10_8_26" not in img_path:
+        #     return
+
         # 创建画布
         plt.figure(figsize=(20, 10))
         
@@ -61,9 +70,7 @@ def calculate_and_visualize_map(gt_json_path, pred_json_path, image_dir, output_
         # 准备标注可视化
         overlay = img.copy()
         alpha = 0.4  # 透明度
-        print('img_path:', img_path)
-        print('img_id:', image_id)
-        print('img_shape:', img.shape)
+
         # 绘制GT mask
         ann_ids = coco_gt.getAnnIds(imgIds=image_id)
         # print('anno_ids:', ann_ids)
@@ -85,6 +92,7 @@ def calculate_and_visualize_map(gt_json_path, pred_json_path, image_dir, output_
         plt.imshow(img)
         ann_ids = coco_pred.getAnnIds(imgIds=image_id)
         annotations = coco_pred.loadAnns(ann_ids)
+
         for ann in annotations:
             mask = coco_pred.annToMask(ann)
             # color = np.array([1.0, 0.0, 0.0])  # 红色表示预测
@@ -107,8 +115,8 @@ def calculate_and_visualize_map(gt_json_path, pred_json_path, image_dir, output_
 # 使用示例
 if __name__ == "__main__":
     calculate_and_visualize_map(
-        gt_json_path="/home/jinghao/projects/dental_plague_detection/Self-PPD/logs_tiny_1024_50e_lr1e-4_bblr5e-5_wd_4scales_twostage_100queries_2nd_512/saved_jsons/_gt_val.json",
-        pred_json_path="/home/jinghao/projects/dental_plague_detection/Self-PPD/logs_tiny_1024_50e_lr1e-4_bblr5e-5_wd_4scales_twostage_100queries_test_512/saved_jsons/_pred_val_epoch_063.json",
-        image_dir="/home/jinghao/projects/dental_plague_detection/dataset/2025_revised_for_training_split/test/JPEGImages",
-        output_dir="/home/jinghao/projects/dental_plague_detection/Self-PPD/ins_seg_output_ours"
+        gt_json_path="/home/jinghao/projects/dental_plague_detection/dataset/2025_May_revised_training_split/test_2025_July_revised/test_ins_ToI.json",
+        pred_json_path='/home/jinghao/projects/dental_plague_detection/Self-PPD/logs_Eval_testset_revised_2025_July_512_ToI_3rd_9masklayer_wboxTemp/saved_jsons/_pred_val_epoch_000_postprocessed_overlap.json',
+        image_dir="/home/jinghao/projects/dental_plague_detection/dataset/2025_May_revised_training_split/test_2025_July_revised/JPEGImages",
+        output_dir="/home/jinghao/projects/dental_plague_detection/Self-PPD/vis_ins_seg_output_ours_sen0.74/"
     )

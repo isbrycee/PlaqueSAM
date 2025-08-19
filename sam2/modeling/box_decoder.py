@@ -43,7 +43,7 @@ class BoxDecoder(nn.Module):
         modulate_hw_attn=True,
         deformable_decoder=True,
         is_use_prior_loc_templates=False,
-        # prior_loc_templates_npy_input_path=None
+        prior_loc_templates_npy_input_path=None
     ):
         super().__init__()
         self.input_dim = input_dim
@@ -109,7 +109,7 @@ class BoxDecoder(nn.Module):
 
         self.decoder.bbox_embed = self.bbox_embed
         self.decoder.class_embed = self.class_embed
-        # self.prior_loc_templates_npy_input_path = prior_loc_templates_npy_input_path
+        self.prior_loc_templates_npy_input_path = prior_loc_templates_npy_input_path
         self.is_use_prior_loc_templates = is_use_prior_loc_templates
 
         # for teo-stage
@@ -128,7 +128,8 @@ class BoxDecoder(nn.Module):
                 kernel_size=1,
                 bias=False,
             ),
-            nn.BatchNorm2d(hidden_dim),
+            nn.BatchNorm2d(hidden_dim, track_running_stats=False),
+            nn.ReLU(inplace=True),
             nn.Conv2d(
                 hidden_dim,
                 hidden_dim,
@@ -136,7 +137,8 @@ class BoxDecoder(nn.Module):
                 padding=1,
                 bias=False,
             ),
-            nn.BatchNorm2d(hidden_dim),
+            nn.BatchNorm2d(hidden_dim, track_running_stats=False),
+            nn.ReLU(inplace=True),
         )
 
         self.fpn_channel_proj_64 = nn.Sequential(
@@ -146,7 +148,8 @@ class BoxDecoder(nn.Module):
                 kernel_size=1,
                 bias=False,
             ),
-            nn.BatchNorm2d(hidden_dim),
+            nn.BatchNorm2d(hidden_dim, track_running_stats=False),
+            nn.ReLU(inplace=True),
             nn.Conv2d(
                 hidden_dim,
                 hidden_dim,
@@ -154,7 +157,8 @@ class BoxDecoder(nn.Module):
                 padding=1,
                 bias=False,
             ),
-            nn.BatchNorm2d(hidden_dim),
+            nn.BatchNorm2d(hidden_dim, track_running_stats=False),
+            nn.ReLU(inplace=True),
         )
 
         self.fpn_channel_proj_256 = nn.Sequential(
@@ -164,7 +168,8 @@ class BoxDecoder(nn.Module):
                 kernel_size=1,
                 bias=False,
             ),
-            nn.BatchNorm2d(hidden_dim),
+            nn.BatchNorm2d(hidden_dim, track_running_stats=False),
+            nn.ReLU(inplace=True),
             nn.Conv2d(
                 hidden_dim,
                 hidden_dim,
@@ -172,7 +177,8 @@ class BoxDecoder(nn.Module):
                 padding=1,
                 bias=False,
             ),
-            nn.BatchNorm2d(hidden_dim),
+            nn.BatchNorm2d(hidden_dim, track_running_stats=False),
+            nn.ReLU(inplace=True),
         )
 
         self.fpn_channel_proj = nn.ModuleList([self.fpn_channel_proj_32, self.fpn_channel_proj_64, self.fpn_channel_proj_256])
@@ -186,7 +192,8 @@ class BoxDecoder(nn.Module):
                     padding=1,
                     bias=False,
                 ),
-                nn.BatchNorm2d(hidden_dim),
+                nn.BatchNorm2d(hidden_dim, track_running_stats=False),
+                nn.ReLU(inplace=True),
             ),
             nn.Sequential(
                 nn.MaxPool2d(kernel_size=2, stride=2),                                               
@@ -197,7 +204,8 @@ class BoxDecoder(nn.Module):
                     padding=1,
                     bias=False,
                 ),
-                nn.BatchNorm2d(hidden_dim),
+                nn.BatchNorm2d(hidden_dim, track_running_stats=False),
+                nn.ReLU(inplace=True),
             ),
         ])
 
@@ -212,19 +220,18 @@ class BoxDecoder(nn.Module):
         # else:
         #     self.prior_loc_feas = None
 
-        # if self.is_use_prior_loc_templates and self.prior_loc_templates_npy_input_path and len(os.listdir(self.prior_loc_templates_npy_input_path)) == 6:
-        #     # prior_loc_feas_list = []
-        #     self.TemplateFeatureExtractor = TemplateFeatureExtractor(self.prior_loc_templates_npy_input_path)
-        #     # for prior_loc_item in os.listdir(self.prior_loc_templates_npy_input_path):
-        #     #     prior_loc_feas_path = os.path.join(self.prior_loc_templates_npy_input_path, prior_loc_item)
-        #     #     prior_loc_feas = np.load(prior_loc_feas_path)['arr_0'] # (256, 3200)
-        #     #     prior_loc_feas_list.append(torch.from_numpy(prior_loc_feas).permute(1,0).contiguous())
-        #     # self.prior_loc_feas = torch.stack(prior_loc_feas_list, dim=0)
-        # else:
-        #     self.TemplateFeatureExtractor = None
+        if self.is_use_prior_loc_templates and self.prior_loc_templates_npy_input_path and len(os.listdir(self.prior_loc_templates_npy_input_path)) == 6:
+            # prior_loc_feas_list = []
+            self.TemplateFeatureExtractor = TemplateFeatureExtractor(self.prior_loc_templates_npy_input_path)
+            # for prior_loc_item in os.listdir(self.prior_loc_templates_npy_input_path):
+            #     prior_loc_feas_path = os.path.join(self.prior_loc_templates_npy_input_path, prior_loc_item)
+            #     prior_loc_feas = np.load(prior_loc_feas_path)['arr_0'] # (256, 3200)
+            #     prior_loc_feas_list.append(torch.from_numpy(prior_loc_feas).permute(1,0).contiguous())
+            # self.prior_loc_feas = torch.stack(prior_loc_feas_list, dim=0)
+        else:
+            self.TemplateFeatureExtractor = None
         
         
-
     def init_ref_points(self, use_num_queries):
         self.refpoint_embed = nn.Embedding(use_num_queries, self.query_dim)
         if self.random_refpoints_xy:
@@ -431,7 +438,7 @@ class TransformerDecoder(nn.Module):
         assert query_dim in [2, 4], "query_dim should be 2/4 but {}".format(query_dim)
         self.num_feature_levels = num_feature_levels
         self.use_detached_boxes_dec_out = use_detached_boxes_dec_out
-
+        
         
         self.ref_point_head = MLP(query_dim // 2 * d_model, d_model, d_model, 2)
         if not deformable_decoder:

@@ -139,7 +139,8 @@ def dice_loss(inputs, targets, num_objects, loss_on_multimask=False):
         Dice loss tensor
     """
     inputs = inputs.sigmoid()# changed by bryce
-    # inputs = F.softmax(inputs, dim=0)
+    targets = targets.to(inputs.device)
+    # targets = F.one_hot(targets, num_classes=4).permute(0, 3, 1, 2)[:, 1:].to(inputs.device)  # 转换为 one-hot 格式 (B, C, H, W)
     if loss_on_multimask:
         # inputs and targets are [N, M, H, W] where M corresponds to multiple predicted masks
         assert inputs.dim() == 4 and targets.dim() == 4
@@ -153,7 +154,7 @@ def dice_loss(inputs, targets, num_objects, loss_on_multimask=False):
     denominator = inputs.sum(-1) + targets.sum(-1)
     loss = 1 - (numerator + 1) / (denominator + 1)
     if loss_on_multimask:
-        return loss / num_objects
+        return loss.sum() / num_objects
     return loss.sum() / num_objects
 
 
@@ -205,10 +206,12 @@ def sigmoid_focal_loss(
     # targets = targets[0:1, :] # changed by bryce ; !!! note !!!
     
     if not for_object_score_compute:
-        input_softmax = F.softmax(inputs, dim=0)
-        prob = input_softmax # size(3,1,256,256)
-        # ce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none") # changed by bryce
-        ce_loss = F.binary_cross_entropy(input_softmax, targets, reduction="none") # changed by bryce
+        prob = inputs.sigmoid()
+        device = prob.device
+        # targets_one_hot = F.one_hot(targets, num_classes=4).permute(0, 3, 1, 2)[:, 1:]  # 转换为 one-hot 格式 (B, C, H, W)
+        targets = targets.to(device, dtype=prob.dtype)
+        ce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none") # changed by bryce
+        # ce_loss = F.binary_cross_entropy(input_softmax, targets, reduction="none") # changed by bryce
     else:
         prob = inputs.sigmoid()
         ce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none")
@@ -223,11 +226,12 @@ def sigmoid_focal_loss(
     if loss_on_multimask:
         # loss is [N, M, H, W] where M corresponds to multiple predicted masks
         assert loss.dim() == 4
-        return loss.flatten(2).mean(-1) / num_objects  # average over spatial dims
+        return loss.flatten(2).mean(-1).sum() # / num_objects  # average over spatial dims
+    
+    if for_object_score_compute:
+        return loss.mean(1).sum()
     
     return loss.mean(1).sum() / num_objects
-
-
 
 
 def focal_loss_for_semantic_seg(logits, targets, alpha=1.0, gamma=2.0, class_weights=None, reduction='mean'):
@@ -271,8 +275,8 @@ def focal_loss_for_semantic_seg(logits, targets, alpha=1.0, gamma=2.0, class_wei
     # 计算 Focal Loss
     # ------------------------------------------
     # 1. 计算 softmax 概率
-    probs = F.softmax(logits, dim=1)  # (B, C, H, W)
-
+    # probs = F.softmax(logits, dim=1)  # (B, C, H, W)
+    probs = logits.sigmoid()
     # 2. 获取目标类别对应的预测概率
     targets_one_hot = F.one_hot(targets, num_classes=C).permute(0, 3, 1, 2)  # 转换为 one-hot 格式 (B, C, H, W)
     targets_one_hot = targets_one_hot.to(device, dtype=probs.dtype)
@@ -296,7 +300,8 @@ def focal_loss_for_semantic_seg(logits, targets, alpha=1.0, gamma=2.0, class_wei
     # 损失聚合
     # ------------------------------------------
     if reduction == 'mean':
-        return focal_loss.mean()
+        batch_losses = focal_loss.mean(dim=(1,2)).sum()
+        return batch_losses # focal_loss.mean()
     elif reduction == 'sum':
         return focal_loss.sum()
     else:
@@ -475,14 +480,19 @@ class MultiStepMultiMasksAndIous(nn.Module):
         ious_list = outputs["multistep_pred_ious"] # len()=6, each (6, 4)
         object_score_logits_list = outputs["multistep_object_score_logits"] # len()=1, each (6, 1)
         aux_src_masks_list = outputs['multistep_aux_pred_multimasks']
+        aux_object_score_logits_list = outputs["multistep_aux_object_score_logits"]
 
+        src_masks_list = outputs["multistep_pred_multimasks_high_res"]
         assert len(src_masks_low_res_list) == len(ious_list)
         assert len(object_score_logits_list) == len(ious_list)
 
         # accumulate the loss over prediction steps
         losses = {"loss_mask": 0, "loss_dice": 0, "loss_iou": 0, "loss_class": 0}
-        for src_masks_low_res, ious, object_score_logits in zip(
-            src_masks_low_res_list, ious_list, object_score_logits_list
+        # for src_masks_low_res, ious, object_score_logits in zip(
+        #     src_masks_low_res_list, ious_list, object_score_logits_list
+        # ):
+        for src_masks, ious, object_score_logits in zip(
+            src_masks_list, ious_list, object_score_logits_list
         ):
             # self._update_losses(
             #     losses, src_masks, target_masks, ious, num_objects, object_score_logits
@@ -491,17 +501,25 @@ class MultiStepMultiMasksAndIous(nn.Module):
             # draw_Data = torch.argmax(src_masks, dim=1).int()
             # self.visualize_semantic_segmentation(draw_Data)
 
-            # self._update_losses_for_semantic_segmentation(
-            #     losses, src_masks, target_masks, ious, num_objects, object_score_logits, mode
-            # )
-
-            self._update_losses_for_MaskDINO_ins_seg_loss(
-                losses, src_masks_low_res, target_masks, num_objects, ious, object_score_logits, mode
+            self._update_losses_for_semantic_segmentation(
+                losses, src_masks, target_masks, ious, num_objects, object_score_logits, mode
             )
+
+        #     self._update_losses_for_MaskDINO_ins_seg_loss(
+        #         losses, src_masks_low_res, target_masks, num_objects, ious, object_score_logits, mode
+        #     )
         
-        for aux_src_masks in aux_src_masks_list:
-            self._update_losses_for_MaskDINO_ins_seg_loss(
-                losses, aux_src_masks, target_masks, num_objects=num_objects,
+        for aux_src_masks, aux_object_score_logits in zip(aux_src_masks_list, aux_object_score_logits_list):
+            if aux_src_masks.shape[-2:] != target_masks.shape[-2:]:
+                high_aux_src_masks = F.interpolate(
+                    aux_src_masks,
+                    size=target_masks.shape[-2:],
+                    mode="bilinear",
+                    align_corners=False,
+                )
+
+            self._update_losses_for_semantic_segmentation(
+                losses, high_aux_src_masks, target_masks, ious, num_objects, aux_object_score_logits, mode
             )
 
         losses[CORE_LOSS_KEY] = self.reduce_loss(losses)
@@ -578,19 +596,32 @@ class MultiStepMultiMasksAndIous(nn.Module):
         self, losses, src_masks, target_masks, ious, num_objects, object_score_logits, mode
     ):
         target_masks = target_masks.squeeze(1).to(torch.int64) #(6,512,512)
+        target_masks = F.one_hot(target_masks, num_classes=4).permute(0, 3, 1, 2)[:, 1:] # targets_one_hot
         # src_masks = src_masks.transpose(1,0).contiguous() # (4,6,512,512)
         # target_masks = target_masks.expand_as(src_masks) # (3,1,256,256)
         # get focal, dice and iou loss on all output masks in a prediction step
-        class_weights = torch.tensor([1.0, 5.0, 20.0, 20.0])
-
+        # class_weights = torch.tensor([1.0, 5.0, 10.0, 10.0])
+        class_weights = torch.tensor([5.0, 10.0, 10.0])
         # if mode == 'val':
         #     src_masks, _ = torch.max(src_masks, dim=0, keepdim=True) # (1, 512, 512)
         #     target_masks, _ = torch.max(target_masks, dim=0, keepdim=True) # (1, 512, 512)
+        loss_multimask = sigmoid_focal_loss(
+                src_masks,
+                target_masks,
+                num_objects,
+                alpha=self.focal_alpha,
+                gamma=self.focal_gamma,
+                loss_on_multimask=True,
+                for_object_score_compute=False
+            )
+        # loss_multimask = focal_loss_for_semantic_seg(src_masks, target_masks, alpha=self.focal_alpha, gamma=self.focal_gamma, class_weights=class_weights, reduction='mean')
+        # loss_multidice = dice_loss_semantic_seg(src_masks, target_masks)
+        loss_multidice = dice_loss(src_masks, target_masks, num_objects, loss_on_multimask=True)
+        # loss_multiiou = iou_loss_for_semantic_seg(src_masks, target_masks)
 
-        loss_multimask = focal_loss_for_semantic_seg(src_masks, target_masks, alpha=self.focal_alpha, gamma=self.focal_gamma, class_weights=class_weights, reduction='mean')
-        # loss_multimask = focal_loss_for_semantic_seg(src_masks.transpose(0,1).contiguous(), target_masks)
-        loss_multidice = dice_loss_semantic_seg(src_masks, target_masks)
-        loss_multiiou = iou_loss_for_semantic_seg(src_masks, target_masks)
+        loss_multiiou = torch.tensor(
+                0.0, dtype=loss_multimask.dtype, device=loss_multimask.device
+            )
 
         if not self.pred_obj_scores:
             loss_class = torch.tensor(
@@ -603,16 +634,17 @@ class MultiStepMultiMasksAndIous(nn.Module):
                 device=loss_multimask.device,
             )
         else:
-            # target_obj = torch.any((target_masks[:, 0] > 0).flatten(1), dim=-1)[
+            # target_obj = torch.any((target_masks[:, 0] > 0).flatten(2), dim=-1)[
             #     ..., None
             # ].float() # size(3, 1) value [[1,1,1,]]
+            target_obj = torch.any(target_masks.flatten(2) > 0, dim=-1).float() # (6,3)
             # add by bryce
             # num_classes, num_prompts, H, W = src_masks.shape
-            num_prompts = object_score_logits.shape[0]
+            # num_prompts = object_score_logits.shape[0]
             # target_obj = torch.any(target_masks.unsqueeze(0) == torch.arange(num_classes, device=target_masks.device).view(num_classes, 1, 1, 1), dim=(1, 2, 3)).float().view(num_classes, 1)
-            target_obj = torch.ones(num_prompts, device=src_masks.device).unsqueeze(1)
+            # target_obj = torch.ones(num_prompts, device=src_masks.device).unsqueeze(1)
             loss_class = sigmoid_focal_loss(
-                object_score_logits, # changed by bryce
+                object_score_logits.squeeze(-1), # changed by bryce
                 target_obj,
                 num_objects,
                 alpha=self.focal_alpha_obj_score,

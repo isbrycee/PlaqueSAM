@@ -331,7 +331,7 @@ class ImageClassificationLoss(nn.Module):
             loss_fn = nn.CrossEntropyLoss(weight=self.class_weights_for_each_class)
         else:
             loss_fn = nn.CrossEntropyLoss()
-
+        
         loss = loss_fn(outputs, targets)
 
         # computing the accuray for training dataset
@@ -341,6 +341,9 @@ class ImageClassificationLoss(nn.Module):
         # the weight multiplier will be conduct outside together !!!  not here 
         # if self.weight_dict is not None:
         #     loss *= loss
-            
+        # print("==============================")
+        # print("predicted_classes:", predicted_classes)
+        # print("==============================")
+
         return {'loss_image_classify':loss, 
                 'image_classification_error': torch.tensor((1 - accuracy) * 100, device=device)}

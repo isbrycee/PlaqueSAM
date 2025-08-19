@@ -109,6 +109,7 @@ class Frame:
     boxes: dict
     image_classify: int
     box_mask_pairs: dict
+    size: Tuple[int, int]
 
 
 @dataclass
@@ -117,7 +118,7 @@ class VideoDatapoint:
 
     frames: List[Frame]
     video_id: int
-    size: Tuple[int, int]
+    size: List[Tuple[int, int]]
     video_name: str
 
 
@@ -192,7 +193,7 @@ def collate_fn(
                 step_t_objects_identifier[t].append(
                     torch.tensor([orig_video_id, orig_obj_id, orig_frame_idx])
                 )
-                step_t_frame_orig_size[t].append(torch.tensor(orig_frame_size))
+                step_t_frame_orig_size[t].append(torch.tensor(orig_frame_size[t]))
 
     # obj_to_frame_idx = torch.stack(
     #     [
@@ -221,7 +222,7 @@ def collate_fn(
     )
     boxes = step_t_boxes # add by bryce
     image_classify = step_t_image_classify # add by bryce
-    box_mask_pairs = step_t_box_mask_pairs
+    box_mask_pairs = step_t_box_mask_pairs # add by bryce
     
     return BatchedVideoDatapoint(
         img_batch=img_batch,

@@ -83,8 +83,8 @@ class RandomUniformSampler(VOSSampler):
         #     object_ids.append(np.uint8(3)) # 3rd class for caries
         
         # fixed
-        # object_ids = [np.uint8(1), np.uint8(2), np.uint8(3)] # [tooth, plague, caries]; 1,2,3 is the idx in the .png mask; 0 (background) is removed; 
-        object_ids = [np.uint8(i) for i in range(self.max_num_objects)] # Fixing classes
+        object_ids = [np.uint8(1), np.uint8(2), np.uint8(3)] # [tooth, plague, caries]; 1,2,3 is the idx in the .png mask; 0 (background) is removed; 
+        # object_ids = [np.uint8(i) for i in range(self.max_num_objects)] # Fixing classes
 
         return SampledFramesAndObjects(frames=frames, object_ids=object_ids)
 
