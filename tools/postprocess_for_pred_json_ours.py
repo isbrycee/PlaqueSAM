@@ -132,38 +132,38 @@ def filter_masks_by_area(gt_json_path, pred_json_path, output_json_path, area_th
         overlap_regions = overlap_mask > 1
 
         # Resolve overlaps based on category rules; for better visualization
-        # for i in range(len(decoded_masks)):
-        #     for j in range(i + 1, len(decoded_masks)):
-        #         # Find overlapping regions between mask i and mask j
-        #         overlap = (mask_ids[i] > 0) & (mask_ids[j] > 0)
-        #         if not np.any(overlap):
-        #             continue
+        for i in range(len(decoded_masks)):
+            for j in range(i + 1, len(decoded_masks)):
+                # Find overlapping regions between mask i and mask j
+                overlap = (mask_ids[i] > 0) & (mask_ids[j] > 0)
+                if not np.any(overlap):
+                    continue
                 
-        #         # Get categories of the two overlapping masks
-        #         category_i = annotations[i]['category_id'] % 3
-        #         category_j = annotations[j]['category_id'] % 3
+                # Get categories of the two overlapping masks
+                category_i = annotations[i]['category_id'] % 3
+                category_j = annotations[j]['category_id'] % 3
 
-        #         # Determine which category should dominate the overlap
-        #         if category_i == 0 and category_j == 1:
-        #             dominant_category = 0
-        #         elif category_i == 0 and category_j == 2:
-        #             dominant_category = 0
-        #         elif category_i == 1 and category_j == 2:
-        #             dominant_category = 2 # 2
-        #         elif category_j == 0 and category_i == 1:
-        #             dominant_category = 0
-        #         elif category_j == 0 and category_i == 2:
-        #             dominant_category = 0
-        #         elif category_j == 1 and category_i == 2:
-        #             dominant_category = 2 # 2
-        #         else:
-        #             continue  # No overlap adjustment needed
+                # Determine which category should dominate the overlap
+                if category_i == 0 and category_j == 1:
+                    dominant_category = 0
+                elif category_i == 0 and category_j == 2:
+                    dominant_category = 0
+                elif category_i == 1 and category_j == 2:
+                    dominant_category = 2 # 2
+                elif category_j == 0 and category_i == 1:
+                    dominant_category = 0
+                elif category_j == 0 and category_i == 2:
+                    dominant_category = 0
+                elif category_j == 1 and category_i == 2:
+                    dominant_category = 2 # 2
+                else:
+                    continue  # No overlap adjustment needed
 
-        #         # Apply the dominant category to the overlap region
-        #         if dominant_category == category_i:
-        #             mask_ids[j][overlap] = 0  # Remove overlap from mask j
-        #         else:
-        #             mask_ids[i][overlap] = 0  # Remove overlap from mask i
+                # Apply the dominant category to the overlap region
+                if dominant_category == category_i:
+                    mask_ids[j][overlap] = 0  # Remove overlap from mask j
+                else:
+                    mask_ids[i][overlap] = 0  # Remove overlap from mask i
 
 
         # Re-encode each adjusted mask and update annotations
@@ -201,8 +201,8 @@ def filter_masks_by_area(gt_json_path, pred_json_path, output_json_path, area_th
 # Example usage
 if __name__ == "__main__":
     gt_json_path = "/home/jinghao/projects/dental_plague_detection/dataset/2025_May_revised_training_split/test_2025_July_revised/test_ins_ToI.json"  # Replace with the path to your ground truth JSON
-    pred_json_path = "/home/jinghao/projects/dental_plague_detection/Self-PPD/logs_Eval_testset_woboxtemp_noise0.1/saved_jsons/_pred_val_epoch_000.json"  # Replace with the path to your predictions JSON
-    output_json_path = "/home/jinghao/projects/dental_plague_detection/Self-PPD/logs_Eval_testset_woboxtemp_noise0.1/saved_jsons/_pred_val_epoch_000_postprocessed.json"  # Replace with the desired output path
+    pred_json_path = "/data/dental_plague_data/PlaqueSAM_exps_models_results/logs_Eval_testset_wboxtemp_white_temp_noise0.0/saved_jsons/_pred_val_epoch_000.json"  # Replace with the path to your predictions JSON
+    output_json_path = "/data/dental_plague_data/PlaqueSAM_exps_models_results/logs_Eval_testset_wboxtemp_white_temp_noise0.0/saved_jsons/_pred_val_epoch_000_postprocessed_for_visualization.json"  # Replace with the desired output path
     area_threshold = 1000  # Replace with the minimum area threshold; 1500 / 200
     
     filter_masks_by_area(gt_json_path, pred_json_path, output_json_path, area_threshold)

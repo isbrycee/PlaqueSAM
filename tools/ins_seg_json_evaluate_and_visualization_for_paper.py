@@ -197,7 +197,7 @@ def vis_one_image(img_path, pred_anns, pred_boxes, gt_anns, coco_gt, cat_id_to_n
 
             # for drawing tooth edge
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            cv2.drawContours(img, contours, -1, (238, 238, 175	), thickness=4)
+            cv2.drawContours(img, contours, -1, (238, 238, 175), thickness=4)
 
     # for drawing tooth mask
     # img = cv2.addWeighted(overlay, 0.2, img, 0.8, 0)
@@ -300,8 +300,8 @@ def main(gt_json_path, pred_mask_json_path, pred_box_json_path, image_root, out_
 
 if __name__ == "__main__":
     gt_json_path = '/home/jinghao/projects/dental_plague_detection/dataset/2025_May_revised_training_split/test_2025_July_revised/test_ins_ToI.json'
-    pred_mask_json_path = '/home/jinghao/projects/dental_plague_detection/Self-PPD/exps_FINAL/FINAP_PlaqueSAM_logs_Eval_testset_revised_2025_July_512_ToI_3rd_9masklayer_wboxTemp/saved_jsons/_pred_val_epoch_000_postprocessed_for_visualization.json' 
-    pred_box_json_path = '/home/jinghao/projects/dental_plague_detection/Self-PPD/exps_FINAL/FINAP_PlaqueSAM_logs_Eval_testset_revised_2025_July_512_ToI_3rd_9masklayer_wboxTemp/saved_jsons/_box_pred_val_epoch_000_for_visualization.json' 
+    pred_mask_json_path = '/data/dental_plague_data/PlaqueSAM_exps_models_results/logs_Eval_testset_wboxtemp_white_temp_noise0.0/saved_jsons/_pred_val_epoch_000_postprocessed_for_visualization.json' 
+    pred_box_json_path = '/data/dental_plague_data/PlaqueSAM_exps_models_results/logs_Eval_testset_wboxtemp_white_temp_noise0.0/saved_jsons/_box_pred_val_epoch_000_for_visualization.json' 
     image_root = '/home/jinghao/projects/dental_plague_detection/dataset/2025_May_revised_training_split/test_2025_July_revised/JPEGImages'
-    out_dir = '/home/jinghao/projects/dental_plague_detection/Self-PPD/vis_ins_seg_output_ours_for_paper_tooth_edge/'
+    out_dir = '/home/jinghao/projects/dental_plague_detection/PlaqueSAM/visualizations_for_papers/'
     main(gt_json_path, pred_mask_json_path, pred_box_json_path, image_root, out_dir)
