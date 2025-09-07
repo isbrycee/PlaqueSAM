@@ -537,6 +537,24 @@ def calculate_Sensitivity_Specificity_per_category(gt_json, pred_json, tooth_id_
 
     return metrics
 
+def count_values_three_plaque_levels(data: dict):
+    """
+    输入一个字典 { (i, j): v }，其中 v ∈ {0,1,2,3}
+    输出每个 v 出现的次数
+    """
+    # 初始化计数
+    count = {0: 0, 1: 0, 2: 0, 3: 0}
+
+    for v in data.values():
+        if v in count:
+            count[v] += 1
+        else:
+            raise ValueError(f"发现非法 value: {v}, 只能是 0/1/2/3")
+
+    # 打印结果
+    for k in range(4):
+        print(f"数值 {k} 出现了 {count[k]} 次")
+
 def draw_bar_charts(data):
     if 'doubleteeth' in data:
         data['DT'] = data.pop('doubleteeth')
@@ -819,23 +837,20 @@ def compute_metrics_for_box_detection(gt_json_path, pred_json_path, iou_threshol
 # 使用示例
 if __name__ == "__main__":
     gt_json_path="/home/jinghao/projects/dental_plague_detection/dataset/2025_May_revised_training_split/test_2025_July_revised/test_ins_ToI.json"
-    pred_json_path="/home/jinghao/projects/dental_plague_detection/Self-PPD/logs_Eval_testset_woboxtemp_noise0.1/saved_jsons/_pred_val_epoch_000_postprocessed.json" # '/home/jinghao/projects/dental_plague_detection/comparasive_methods/MP-Former/output/inference/coco_instances_results_score_over_0.50.json'
+    pred_json_path="/home/jinghao/projects/dental_plague_detection/MaskDINO/detectron2/tools/output_maskrcnn_resizeShortEdge/inference/coco_instances_results_score_over_0.50.json" 
     
-    box_gt_json_path="/home/jinghao/projects/dental_plague_detection/Self-PPD/logs_Eval_testset_woboxtemp_noise0.1/saved_jsons/_box_gt_val_for_calculate_metrics.pt"
-    box_pred_json_path="/home/jinghao/projects/dental_plague_detection/Self-PPD/logs_Eval_testset_woboxtemp_noise0.1/saved_jsons/_box_pred_val_epoch_000_for_calculate_metrics.pt"
+    box_gt_json_path="/data/dental_plague_data/PlaqueSAM_exps_models_results/logs_Eval_testset_wboxtemp_white_temp_noise0.0/saved_jsons/_box_gt_val_for_calculate_metrics.pt"
+    box_pred_json_path="/data/dental_plague_data/PlaqueSAM_exps_models_results/logs_Eval_testset_wboxtemp_white_temp_noise0.0/saved_jsons/_box_pred_val_epoch_000_for_calculate_metrics.pt"
     
     # box_gt_json_path="/home/jinghao/projects/dental_plague_detection/Self-PPD/logs_Eval_testset_revised_2025_July_512_ToI_3rd_9masklayer_woboxTemp/saved_jsons/_box_gt_val_for_calculate_metrics.pt"
     # box_pred_json_path="/home/jinghao/projects/dental_plague_detection/Self-PPD/logs_Eval_testset_revised_2025_July_512_ToI_3rd_9masklayer_woboxTemp/saved_jsons/_box_pred_val_epoch_000_for_calculate_metrics.pt"
     print(compute_metrics_for_box_detection(box_gt_json_path, box_pred_json_path))
     
-    # Ours '/home/jinghao/projects/dental_plague_detection/Self-PPD/logs_Eval_testset_revised_2025_July_512_ToI_3rd_9masklayer_wboxTemp/saved_jsons/_pred_val_epoch_000_postprocessed.json'
+    # Ours '/data/dental_plague_data/PlaqueSAM_exps_models_results/logs_Eval_testset_wboxtemp_white_temp_noise0.0/saved_jsons/_pred_val_epoch_000_postprocessed.json'
     # MaskDINO '/home/jinghao/projects/dental_plague_detection/MaskDINO/output/inference/coco_instances_results_score_over_0.50.json'
     # Mask2Former '/home/jinghao/projects/dental_plague_detection/comparasive_methods/Mask2Former/output/inference/coco_instances_results_score_over_0.50.json'
     # MaskRCNN '/home/jinghao/projects/dental_plague_detection/MaskDINO/detectron2/tools/output_maskrcnn_resizeShortEdge/inference/coco_instances_results_score_over_0.50.json'
-    # '/home/jinghao/projects/dental_plague_detection/MaskDINO/detectron2/projects/PointSup/output/inference/coco_instances_results_score_over_0.50.json'
-    # '/home/jinghao/projects/dental_plague_detection/MaskDINO/detectron2/tools/output/inference/coco_instances_results_score_over_0.50.json'
-    # '/home/jinghao/projects/dental_plague_detection/MaskDINO/detectron2/tools/output/inference/coco_instances_results_score_over_0.50.json'
-    # '/home/jinghao/projects/dental_plague_detection/MaskDINO/detectron2/projects/PointSup/output/inference/coco_instances_results_score_over_0.50.json'
+    # PointSup '/home/jinghao/projects/dental_plague_detection/MaskDINO/detectron2/projects/PointSup/output/inference/coco_instances_results_score_over_0.50.json'
     
     mask_mAP, mask_ap50, sensitivity, specificity = calculate_mAP_Sensitivity_Specificity(
         gt_json_path,
@@ -855,6 +870,7 @@ if __name__ == "__main__":
     # pred_json 只有annotations
     pred_grades = compute_tooth_grades(pred_json, id2size)
 
+    count_values_three_plaque_levels(gt_grades)
     # import pdb; pdb.set_trace()
     # print(gt_json)
     # print(gt_grades)

@@ -48,6 +48,39 @@ box_class_color_dict = {
     'doubleteeth': (255, 57, 0)
 }
 
+toothID_to_Number_Map = {
+    0: '51',
+    1: '52',
+    2: '53',
+    3: '54',
+    4: '55',
+    5: '61',
+    6: '62',
+    7: '63',
+    8: '64',
+    9: '65',
+    10: '71',
+    11: '72',
+    12: '73',
+    13: '74',
+    14: '75',
+    15: '81',
+    16: '82',
+    17: '83',
+    18: '84',
+    19: '85',
+    20: '11',
+    21: '16',
+    22: '21',
+    23: '26',
+    24: '31',
+    25: '36',
+    26: '41',
+    27: '46',
+    28: 'doubleteeth',
+    29: 'crown'
+}
+
 def compute_iou(mask1, mask2):
     inter = np.logical_and(mask1, mask2).sum()
     union = np.logical_or(mask1, mask2).sum()
@@ -126,10 +159,53 @@ def scale_bbox(bbox, scale_x, scale_y):
     h = h * scale_y
     return [x, y, w, h]
 
-def draw_mask_contour(img, mask, color, thickness=4):
+def adjust_color(color, factor=0.7):
+    """
+    调整颜色亮度：生成一个变暗或变浅的颜色，用于文字背景。
+    
+    参数:
+        color: (B, G, R) 颜色值
+        factor: 颜色调整因子 (0~1, 越小颜色越暗)
+    返回:
+        调整后的颜色 (B, G, R)
+    """
+    return tuple(max(0, min(255, int(c * factor))) for c in color)
+
+def draw_mask_contour(img, mask, color, thickness=4, draw_bbox=True, bbox_color=(0, 255, 0), category_id=-1, font_scale=1.1,
+        text_color=(255, 255, 255)):
     mask = (mask * 255).astype(np.uint8)
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     cv2.drawContours(img, contours, -1, color, thickness)
+    # 绘制外接矩形
+    if draw_bbox:
+        for cnt in contours:
+            x, y, w, h = cv2.boundingRect(cnt)
+            cv2.rectangle(img, (x, y), (x + w, y + h), bbox_color, thickness)
+
+            if category_id is not None:
+                label = str(category_id)
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                (tw, th), baseline = cv2.getTextSize(label, font, font_scale, 1)
+
+                # 背景矩形
+                cv2.rectangle(
+                    img,
+                    (x, y - th - baseline),
+                    (x + tw, y),
+                    adjust_color(bbox_color, factor=0.7),
+                    -1
+                )
+                # 写文字
+                cv2.putText(
+                    img,
+                    label,
+                    (x, y - baseline),
+                    font,
+                    font_scale,
+                    text_color,
+                    1,
+                    cv2.LINE_AA
+                )
 
 def draw_mask(img, mask, color, alpha=0.8, thickness=None):
     color_arr = np.array(color, dtype=np.uint8).reshape(1, 1, 3)
@@ -160,7 +236,7 @@ def draw_dotted_contour(image, contour, color, thickness=2, dash_len=5, space_le
             )
             pos += dash_len + space_len  # 前进 dash + space
 
-def vis_one_image(img_path, pred_anns, pred_boxes, gt_anns, coco_gt, cat_id_to_name, save_path, box_base_size=512, iou_thr=0.3):
+def vis_one_image(img_path, pred_anns, pred_boxes, gt_anns, coco_gt, cat_id_to_name, save_path, category_id2name, box_base_size=512, iou_thr=0.3):
     img = cv2.imread(img_path)
     if img is None:
         print('Image not found:', img_path)
@@ -174,7 +250,7 @@ def vis_one_image(img_path, pred_anns, pred_boxes, gt_anns, coco_gt, cat_id_to_n
     for box_info in pred_boxes:
         box = box_info['bbox']
         label = str(box_info['category'])
-        # score = box_info['score']
+        score = box_info['score']
         scaled_box = scale_bbox(box, scale_x, scale_y)
         draw_box(img, scaled_box, label, box_class_color_dict[label], 4)
 
@@ -188,7 +264,7 @@ def vis_one_image(img_path, pred_anns, pred_boxes, gt_anns, coco_gt, cat_id_to_n
 
     # --- category_id % 3 == 1 的 instance，保留原有mask染色可视化 ---
     mask_colors = (255, 254, 2)  # 你可以根据实际需求调整
-    for ann in gt_anns: # pred_anns
+    for ann in pred_anns:
         if ann['category_id'] % 3 == 1:
             mask = coco_gt.annToMask(ann)
             # for drawing tooth mask
@@ -211,9 +287,8 @@ def vis_one_image(img_path, pred_anns, pred_boxes, gt_anns, coco_gt, cat_id_to_n
     
     # 2. 生成mask
     pred_masks = [coco_gt.annToMask(ann) for ann in pred_target]
-    # pred_masks = [] # for drawing gt
     gt_masks = [coco_gt.annToMask(ann) for ann in gt_target]    
-
+    
     # 3. 匹配IoU
     gt_matched = set()
     pred_matched = set()
@@ -239,11 +314,11 @@ def vis_one_image(img_path, pred_anns, pred_boxes, gt_anns, coco_gt, cat_id_to_n
 
     # 4. 可视化
     for i in tp_pred_idx:
-        draw_mask_contour(img, pred_masks[i], (0,255,0), thickness=6)     # TP: 绿色
+        draw_mask_contour(img, pred_masks[i], (0,255,0), 6, True, (0,255,0), toothID_to_Number_Map[category_id2name[pred_target[i]['category_id']]])     # TP: 绿色
     for i in fp_pred_idx:
-        draw_mask_contour(img, pred_masks[i], (0,0,255), thickness=6)     # FP: 红色
+        draw_mask_contour(img, pred_masks[i], (0,0,255), 6, True, (0,0,255), toothID_to_Number_Map[category_id2name[pred_target[i]['category_id']]])     # FP: 红色
     for j in fn_gt_idx:
-        draw_mask_contour(img, gt_masks[j],  (0,255,255), thickness=6)     # FN: 黄色  # 画 gt 时使用紫色 (155, 121, 255)
+        draw_mask_contour(img, gt_masks[j], (0,255,255), 6, True, (0,255,255), toothID_to_Number_Map[category_id2name[gt_target[j]['category_id']]])     # FN: 黄色
 
     # for idx, ann in enumerate(mask_anns):
     #     mask = coco_gt.annToMask(ann)
@@ -270,6 +345,8 @@ def main(gt_json_path, pred_mask_json_path, pred_box_json_path, image_root, out_
 
     # file_name <-> image_id 映射
     file_name2id = {img['file_name']: img['id'] for img in gt_json['images']}
+    
+    category_id2name = {cat['id']: int(cat['name'].split('_')[0]) for cat in gt_json['categories']}
 
     # 预测分割的anns按image_id分组
     pred_mask_anns_per_img = defaultdict(list)
@@ -293,16 +370,17 @@ def main(gt_json_path, pred_mask_json_path, pred_box_json_path, image_root, out_
         image_id = file_name2id[file_name]
         img_path = os.path.join(image_root, file_name)
         pred_anns = pred_mask_anns_per_img[image_id]
-        pred_boxes = pred_boxes_per_file[file_name]
+        pred_boxes = []
         gt_anns = gt_mask_anns_per_img[image_id]
         save_path = os.path.join(out_dir, file_name.replace('/', '_'))
-        vis_one_image(img_path, pred_anns, pred_boxes, gt_anns, coco_gt, cat_id_to_name, save_path)
+        vis_one_image(img_path, pred_anns, pred_boxes, gt_anns, coco_gt, cat_id_to_name, save_path, category_id2name)
 
 
 if __name__ == "__main__":
     gt_json_path = '/home/jinghao/projects/dental_plague_detection/dataset/2025_May_revised_training_split/test_2025_July_revised/test_ins_ToI.json'
-    pred_mask_json_path = '/data/dental_plague_data/PlaqueSAM_exps_models_results/logs_Eval_testset_wboxtemp_white_temp_noise0.0/saved_jsons/_pred_val_epoch_000_postprocessed_for_visualization.json' 
-    pred_box_json_path = '/data/dental_plague_data/PlaqueSAM_exps_models_results/logs_Eval_testset_wboxtemp_white_temp_noise0.0/saved_jsons/_box_pred_val_epoch_000_for_visualization.json' # _box_pred_val_epoch_000_for_visualization.json
+    pred_mask_json_path = '/home/jinghao/projects/dental_plague_detection/MaskDINO/detectron2/projects/PointSup/output/inference/coco_instances_results_score_over_0.50.json' 
+    pred_box_json_path = '/data/dental_plague_data/PlaqueSAM_exps_models_results/logs_Eval_testset_wboxtemp_white_temp_noise0.0/saved_jsons/_box_pred_val_epoch_000_for_visualization.json' 
     image_root = '/home/jinghao/projects/dental_plague_detection/dataset/2025_May_revised_training_split/test_2025_July_revised/JPEGImages'
-    out_dir = '/home/jinghao/projects/dental_plague_detection/PlaqueSAM/visualizations_for_gt/'
+    out_dir = '/home/jinghao/projects/dental_plague_detection/PlaqueSAM/visualizations_for_PointSup/'
     main(gt_json_path, pred_mask_json_path, pred_box_json_path, image_root, out_dir)
+

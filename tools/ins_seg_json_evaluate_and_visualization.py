@@ -116,7 +116,7 @@ def calculate_and_visualize_map(gt_json_path, pred_json_path, image_dir, output_
 if __name__ == "__main__":
     calculate_and_visualize_map(
         gt_json_path="/home/jinghao/projects/dental_plague_detection/dataset/2025_May_revised_training_split/test_2025_July_revised/test_ins_ToI.json",
-        pred_json_path='/home/jinghao/projects/dental_plague_detection/Self-PPD/logs_Eval_testset_revised_2025_July_512_ToI_3rd_9masklayer_wboxTemp/saved_jsons/_pred_val_epoch_000_postprocessed_overlap.json',
+        pred_json_path='/home/jinghao/projects/dental_plague_detection/MaskDINO/detectron2/tools/output_maskrcnn_resizeShortEdge/inference/coco_instances_results_score_over_0.50.json',
         image_dir="/home/jinghao/projects/dental_plague_detection/dataset/2025_May_revised_training_split/test_2025_July_revised/JPEGImages",
-        output_dir="/home/jinghao/projects/dental_plague_detection/Self-PPD/vis_ins_seg_output_ours_sen0.74/"
+        output_dir="/home/jinghao/projects/dental_plague_detection/PlaqueSAM/visualizations_for_maskrcnn/"
     )
