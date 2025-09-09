@@ -106,6 +106,8 @@ def compute_tooth_grades(annotations, id2size):
                 grade = 3
             else:
                 grade = 0
+            if grade > 1:
+                grade = 1
         result[key] = grade
 
     return result
@@ -213,8 +215,14 @@ def calculate_tooth_level_Sensitivity_Specificity(gt_grades, pred_grades):
     print(f"TP: {tp}, TN: {tn}, FP: {fp}, FN: {fn}")
     # print(f"Sensitivity: {sensitivity:.2f}")
     # print(f"Specificity: {specificity:.2f}")
+    # 计算 precision 和 recall
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0
 
-    return sensitivity, specificity
+    # 计算 F1
+    f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0
+
+    return sensitivity, specificity, f1
    
 
 # def calculate_Accuracy_three_classes_of_dental_plaque(gt_grades, pred_grades, classes=[0,1,2,3]):
@@ -833,11 +841,43 @@ def compute_metrics_for_box_detection(gt_json_path, pred_json_path, iou_threshol
         "false_negatives": total_fn,
     }
 
+def save_pred_gt_to_excel(pred_dict, gt_dict, out_path='pred_gt.xlsx', include_keys=False, strict=True): 
+    """ 
+    pred_dict, gt_dict: 形如 { (360, 13): 1, (360, 12): 1, (361, 0): 0 } 的字典 
+    out_path: 生成的 Excel 文件路径 include_keys: 是否把键也写为第三列（便于核对） 
+    strict: True 时要求两边键集合完全一致；False 时取并集，缺失处为 None 
+    """ 
+    pred_keys = set(pred_dict.keys()) 
+    gt_keys = set(gt_dict.keys())
+
+    if strict and pred_keys != gt_keys:
+        missing_in_gt = sorted(pred_keys - gt_keys)
+        missing_in_pred = sorted(gt_keys - pred_keys)
+        raise ValueError(f'键集合不一致。仅在 pred 中的键: {missing_in_gt}; 仅在 gt 中的键: {missing_in_pred}')
+
+    # 统一的键顺序，保证 pred 与 gt 一一对应
+    keys = sorted(pred_keys | gt_keys)
+
+    pred_col = [pred_dict.get(k, None) for k in keys]
+    gt_col = [gt_dict.get(k, None) for k in keys]
+
+    data = {'pred': pred_col, 'gt': gt_col}  # 第一列 pred，第二列 gt
+    columns = ['pred', 'gt']
+
+    if include_keys:
+        # 将键转成字符串，避免复杂对象在 Excel 中显示不友好
+        key_strings = [str(k) for k in keys]
+        data['key'] = key_strings
+        columns.append('key')
+
+    df = pd.DataFrame(data, columns=columns)
+    df.to_excel(out_path, index=False)  # 需要安装 openpyxl 或 xlsxwriter 作为引擎
+    print(f'已保存到: {out_path}')
 
 # 使用示例
 if __name__ == "__main__":
     gt_json_path="/home/jinghao/projects/dental_plague_detection/dataset/2025_May_revised_training_split/test_2025_July_revised/test_ins_ToI.json"
-    pred_json_path="/home/jinghao/projects/dental_plague_detection/MaskDINO/detectron2/tools/output_maskrcnn_resizeShortEdge/inference/coco_instances_results_score_over_0.50.json" 
+    pred_json_path="/home/jinghao/projects/dental_plague_detection/MaskDINO/detectron2/projects/PointSup/output/inference/coco_instances_results_score_over_0.50.json" 
     
     box_gt_json_path="/data/dental_plague_data/PlaqueSAM_exps_models_results/logs_Eval_testset_wboxtemp_white_temp_noise0.0/saved_jsons/_box_gt_val_for_calculate_metrics.pt"
     box_pred_json_path="/data/dental_plague_data/PlaqueSAM_exps_models_results/logs_Eval_testset_wboxtemp_white_temp_noise0.0/saved_jsons/_box_pred_val_epoch_000_for_calculate_metrics.pt"
@@ -871,6 +911,9 @@ if __name__ == "__main__":
     pred_grades = compute_tooth_grades(pred_json, id2size)
 
     count_values_three_plaque_levels(gt_grades)
+
+    save_pred_gt_to_excel(pred_grades, gt_grades, out_path='pred_gt_dental_plaque_PointSup.xlsx', include_keys=False, strict=False)
+
     # import pdb; pdb.set_trace()
     # print(gt_json)
     # print(gt_grades)
@@ -881,7 +924,7 @@ if __name__ == "__main__":
 
     accs = calculate_acc(gt_grades, pred_grades)
 
-    sensitivity_per_tooth, specificity_per_tooth = calculate_tooth_level_Sensitivity_Specificity(gt_grades, pred_grades)
+    sensitivity_per_tooth, specificity_per_tooth, f1_per_tooth = calculate_tooth_level_Sensitivity_Specificity(gt_grades, pred_grades)
 
     acc_tooth, acc_image, acc_patient = accs['tooth_acc'], accs['image_acc'], accs['patient_acc']
 
@@ -899,12 +942,12 @@ if __name__ == "__main__":
     draw_bar_charts(plaque_mIoU_Sensitivity_Specificity_per_category_dict)
     # print(plaque_mIoU_Sensitivity_Specificity_per_category_dict)
     # 生成表格
-    header = "|{:^12}|{:^12}|{:^13}|{:^13}|{:^13}|{:^13}|{:^13}|{:^12}|{:^12}|{:^14}|".format(
-        "mask_mAP", "mask_ap50", "Mask_Sen", "Mask_Sep", "mIoU", "Tooth_Sen", "Tooth_Sep", "acc_tooth", "acc_image", "acc_patient"
+    header = "|{:^12}|{:^12}|{:^13}|{:^13}|{:^13}|{:^13}|{:^13}|{:^13}|{:^12}|{:^12}|{:^14}|".format(
+        "mask_mAP", "mask_ap50", "Mask_Sen", "Mask_Sep", "mIoU", "Tooth_Sen", "Tooth_Sep", "Tooth_F1", "acc_tooth", "acc_image", "acc_patient"
     )
-    line = "+" + "-"*12 + "+" + "-"*12 + "+" + "-"*13 + "+" + "-"*13 + "+" + "-"*13 + "+" + "-"*13 + "+" + "-"*13 + "+" + "-"*12 + "+" + "-"*12 + "+" + "-"*14 + "+"
-    values = "|{:^12.4f}|{:^12.4f}|{:^13.4f}|{:^13.4f}|{:^13.4f}|{:^13.4f}|{:^13.4f}|{:^12.4f}|{:^12.4f}|{:^14.4f}|".format(
-        mask_mAP, mask_ap50, sensitivity, specificity, overall_mIoU_plaque, sensitivity_per_tooth, specificity_per_tooth, acc_tooth, acc_image, acc_patient
+    line = "+" + "-"*12 + "+" + "-"*12 + "+" + "-"*13 + "+" + "-"*13 + "+" + "-"*13 + "+" + "-"*13 + "+" + "-"*13 + "+" + "-"*13 + "+" + "-"*12 + "+" + "-"*12 + "+" + "-"*14 + "+"
+    values = "|{:^12.4f}|{:^12.4f}|{:^13.4f}|{:^13.4f}|{:^13.4f}|{:^13.4f}|{:^13.4f}|{:^13.4f}|{:^12.4f}|{:^12.4f}|{:^14.4f}|".format(
+        mask_mAP, mask_ap50, sensitivity, specificity, overall_mIoU_plaque, sensitivity_per_tooth, specificity_per_tooth, f1_per_tooth, acc_tooth, acc_image, acc_patient
     )
     
     print(line)
@@ -921,7 +964,8 @@ if __name__ == "__main__":
         'mIoU': overall_mIoU_plaque,
         'Sensitivity': sensitivity_per_tooth,
         'Specificity': specificity_per_tooth,
-        'Accuracy': acc_tooth
+        'Accuracy': acc_tooth,
+        'F1': f1_per_tooth
     } 
     ci_95_results = calculate_ci_95_for_metrics(metric_for_ci_95_dict, sample_size)
     for metric, ci in ci_95_results.items():
