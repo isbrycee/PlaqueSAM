@@ -19,7 +19,7 @@ from PIL import Image
 import random
 from pycocotools.cocoeval import maskUtils
 from torchvision.transforms import InterpolationMode
-from utils import box_ops
+from training.utils import box_ops
 from detectron2.utils.memory import retry_if_cuda_oom
 from detectron2.structures import Boxes, ImageList, Instances, BitMasks
 

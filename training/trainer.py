@@ -56,11 +56,11 @@ from training.utils.train_utils import (
     setup_distributed_backend,
 )
 
-from setCriterion import SetCriterion, HungarianMatcher, ImageClassificationLoss
+from training.setCriterion import SetCriterion, HungarianMatcher, ImageClassificationLoss
 from sam2.modeling.box_decoder import PostProcess
-from dataset.mAPCalculator import MAPCalculator
+from training.dataset.mAPCalculator import MAPCalculator
 from torchmetrics.classification import MulticlassJaccardIndex, Accuracy
-from utils.MaskAP_instance_metrics import InstanceSegmentationMetric, Postprocessor_for_Instance_Segmentation
+from training.utils.MaskAP_instance_metrics import InstanceSegmentationMetric, Postprocessor_for_Instance_Segmentation
 from training.utils.box_ops import box_norm_cxcywh_to_unnorm_xyxy, box_normalize_xyxy_to_cxcywh, box_xyxy_to_cxcywh
 import matplotlib.pyplot as plt
 from sam2.modeling.criterion import SetCriterion_MaskDINO, HungarianMatcher_MaskDINO

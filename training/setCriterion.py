@@ -3,14 +3,14 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from utils import box_ops
-from utils.misc import (nested_tensor_from_tensor_list,
+from training.utils import box_ops
+from training.utils.misc import (nested_tensor_from_tensor_list,
                        accuracy, get_world_size, interpolate,
                        is_dist_avail_and_initialized)
 
 from scipy.optimize import linear_sum_assignment
 
-from utils.box_ops import box_cxcywh_to_xyxy, generalized_box_iou, box_normalize_xyxy_to_cxcywh
+from training.utils.box_ops import box_cxcywh_to_xyxy, generalized_box_iou, box_normalize_xyxy_to_cxcywh
 
 
 def sigmoid_focal_loss(inputs, targets, num_boxes, alpha: float = 0.25, gamma: float = 2):
