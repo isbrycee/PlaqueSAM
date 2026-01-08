@@ -44,14 +44,15 @@ def single_proc_run(local_rank, main_port, cfg, world_size):
 def single_node_runner(cfg, main_port: int):
     assert cfg.launcher.num_nodes == 1
     num_proc = cfg.launcher.gpus_per_node
-    torch.multiprocessing.set_start_method(
-        "spawn"
-    )  # CUDA runtime does not support `fork`
-    if num_proc == 1:
+    # If num_proc is 0, we treat it as a single process (CPU) run
+    if num_proc <= 1:
         # directly call single_proc so we can easily set breakpoints
         # mp.spawn does not let us set breakpoints
-        single_proc_run(local_rank=0, main_port=main_port, cfg=cfg, world_size=num_proc)
+        single_proc_run(local_rank=0, main_port=main_port, cfg=cfg, world_size=max(1, num_proc))
     else:
+        torch.multiprocessing.set_start_method(
+            "spawn"
+        )  # CUDA runtime does not support `fork`
         mp_runner = torch.multiprocessing.start_processes
         args = (main_port, cfg, num_proc)
         # Note: using "fork" below, "spawn" causes time and error regressions. Using
@@ -154,6 +155,18 @@ def main(args) -> None:
     cfg.launcher.gpus_per_node = (
         args.num_gpus if args.num_gpus is not None else cfg.launcher.gpus_per_node
     )
+    
+    # Auto-set accelerator and backend if num_gpus is 0
+    if cfg.launcher.gpus_per_node == 0:
+        cfg.trainer.accelerator = "cpu"
+        cfg.trainer.distributed.backend = "gloo"
+    
+    # Manual overrides
+    if args.accelerator is not None:
+        cfg.trainer.accelerator = args.accelerator
+    if args.distributed_backend is not None:
+        cfg.trainer.distributed.backend = args.distributed_backend
+
     cfg.launcher.num_nodes = (
         args.num_nodes if args.num_nodes is not None else cfg.launcher.num_nodes
     )
@@ -262,6 +275,12 @@ if __name__ == "__main__":
     parser.add_argument("--qos", type=str, default=None, help="SLURM qos")
     parser.add_argument(
         "--num-gpus", type=int, default=None, help="number of GPUS per node"
+    )
+    parser.add_argument(
+        "--accelerator", type=str, default=None, help="accelerator type (cuda or cpu)"
+    )
+    parser.add_argument(
+        "--distributed-backend", type=str, default=None, help="distributed backend (nccl or gloo)"
     )
     parser.add_argument("--num-nodes", type=int, default=None, help="Number of nodes")
     args = parser.parse_args()
