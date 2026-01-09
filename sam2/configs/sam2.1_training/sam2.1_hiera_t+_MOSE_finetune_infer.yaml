@@ -12,7 +12,7 @@ scratch:
   vision_lr: 5.0e-05 # 3.0e-06
   phases_per_epoch: 1
   num_epochs: 20
-  dataset_root_path: /home/jinghao/projects/dental_plague_detection/PlaqueSAM/demo_PlaqueSAM/ # 2025_revised_for_training_split_ToI # 2025_revised_for_training_split/ # temp_debug # /home/jinghao/projects/dental_plague_detection/dataset/ # temp_debug/
+  dataset_root_path: demo_PlaqueSAM/ # 2025_revised_for_training_split_ToI # 2025_revised_for_training_split/ # temp_debug # /home/jinghao/projects/dental_plague_detection/dataset/ # temp_debug/
   train_stage: '3rd' # '2nd' '1st'
 dataset_train:
   # PATHS to Dataset
@@ -130,7 +130,7 @@ trainer:
       num_classes: 31
       num_frames: ${scratch.num_frames}
       is_use_prior_loc_templates: True
-      prior_loc_templates_npy_input_path: '/home/jinghao/projects/dental_plague_detection/PlaqueSAM/templates'
+      prior_loc_templates_npy_input_path: 'templates'
     # end
     
     memory_attention:
@@ -203,7 +203,7 @@ trainer:
     threshold_for_masks: 0.5 # add by bryce
     box_decoder_max_num_select: 10 # add by bryce
     box_decoder_postprocess_nms_iou_threshold: 0.5 # add by bryce
-    prior_loc_templates_npy_input_path: '/home/jinghao/projects/dental_plague_detection/PlaqueSAM/templates' # add by bryce
+    prior_loc_templates_npy_input_path: 'templates' # add by bryce
     is_visualize_bad_cases_from_boxes: False # add by bryce
     is_save_json_for_boxes_prediction: True  # add by bryce
     num_maskmem: 5
@@ -483,7 +483,7 @@ trainer:
       ignore_missing_keys: null
       state_dict:
         _target_: training.utils.checkpoint_utils.load_checkpoint_and_apply_kernels
-        checkpoint_path: /data/dental_plague_data/PlaqueSAM_exps_models_results/logs_Eval_testset_wboxtemp_white_temp_noise0.0/checkpoints/best_ins_seg_map50.pt # sam2.1_hiera_base_plus.pt # sam2.1_hiera_tiny.pt # PATH to SAM 2.1 checkpoint
+        checkpoint_path: ../models/PlaqueSAM_best_ins_seg_map50.pt # sam2.1_hiera_base_plus.pt # sam2.1_hiera_tiny.pt # PATH to SAM 2.1 checkpoint
         ckpt_state_dict_keys: ['model']
 
 launcher:

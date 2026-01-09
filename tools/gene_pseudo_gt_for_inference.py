@@ -466,8 +466,9 @@ def generate_json_files(jpeg_images_dir, json_dir):
                 logging.info(f"生成 JSON 文件: {json_path}")
     logging.info(f"{json_dir} 文件夹生成完成！")
 
-def main():
-    demo_dir = "/home/jinghao/projects/dental_plague_detection/PlaqueSAM/demo_PlaqueSAM/"  # 输入文件夹
+def main(demo_dir=None):
+    if demo_dir is None:
+        demo_dir = "demo_PlaqueSAM/"  # 默认输入文件夹
     jpeg_images_dir = os.path.join(demo_dir, "JPEGImages")  # 输入文件夹
     output_json_path = os.path.join(demo_dir, "infer_ins_ToI.json")  # 输出 JSON 文件路径
     annotations_dir = os.path.join(demo_dir, "Annotations")  # 输出 Annotations 文件夹
@@ -483,4 +484,6 @@ def main():
     generate_json_files(jpeg_images_dir, json_dir)
 
 if __name__ == "__main__":
-    main()
+    import sys
+    demo_dir_arg = sys.argv[1] if len(sys.argv) > 1 else None
+    main(demo_dir_arg)
