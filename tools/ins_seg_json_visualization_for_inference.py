@@ -303,15 +303,23 @@ def main(gt_json_path, pred_mask_json_path, pred_box_json_path, image_root, out_
 
 
 if __name__ == "__main__":
-    # Get the directory of the current script
+    import argparse
+    
+    # Get the directory of the current script for default paths
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    # Base path is two levels up from tools/
     base_path = os.path.abspath(os.path.join(script_dir, '..'))
     
-    gt_json_path = os.path.join(base_path, 'demo_PlaqueSAM/infer_ins_ToI.json')
-    pred_mask_json_path = os.path.join(base_path, 'logs_infer_demo/saved_jsons/_pred_val_epoch_000.json')
-    pred_box_json_path = os.path.join(base_path, 'logs_infer_demo/saved_jsons/_box_pred_val_epoch_000_for_visualization.json')
-    image_root = os.path.join(base_path, 'demo_PlaqueSAM/JPEGImages')
-    out_dir = os.path.join(base_path, 'demo_PlaqueSAM/visualizations/')
+    parser = argparse.ArgumentParser(description='Visualize PlaqueSAM instance segmentation results')
+    parser.add_argument('--gt-json', default=os.path.join(base_path, 'demo_PlaqueSAM/infer_ins_ToI.json'),
+                        help='Path to ground truth JSON')
+    parser.add_argument('--pred-mask-json', default=os.path.join(base_path, 'logs_infer_demo/saved_jsons/_pred_val_epoch_000.json'),
+                        help='Path to prediction mask JSON')
+    parser.add_argument('--pred-box-json', default=os.path.join(base_path, 'logs_infer_demo/saved_jsons/_box_pred_val_epoch_000_for_visualization.json'),
+                        help='Path to prediction box JSON')
+    parser.add_argument('--image-root', default=os.path.join(base_path, 'demo_PlaqueSAM/JPEGImages'),
+                        help='Root directory containing images')
+    parser.add_argument('--out-dir', default=os.path.join(base_path, 'demo_PlaqueSAM/visualizations/'),
+                        help='Output directory for visualizations')
     
-    main(gt_json_path, pred_mask_json_path, pred_box_json_path, image_root, out_dir)
+    args = parser.parse_args()
+    main(args.gt_json, args.pred_mask_json, args.pred_box_json, args.image_root, args.out_dir)

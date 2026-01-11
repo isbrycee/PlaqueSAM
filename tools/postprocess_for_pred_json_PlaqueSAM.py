@@ -1,4 +1,5 @@
 import json
+import argparse
 from pycocotools.coco import COCO
 from pycocotools import mask as mask_utils
 from pycocotools.cocoeval import COCOeval
@@ -49,7 +50,7 @@ def keep_largest_component(mask):
     
     return result
 
-def filter_masks_by_area(gt_json_path, pred_json_path, output_json_path, area_threshold):
+def filter_masks_by_area(gt_json_path, pred_json_path, output_json_path, area_threshold, skip_coco_eval=False):
     """
     Filters out masks with area smaller than a given threshold and saves the processed results.
 
@@ -58,6 +59,7 @@ def filter_masks_by_area(gt_json_path, pred_json_path, output_json_path, area_th
         pred_json_path (str): Path to the predictions JSON file.
         output_json_path (str): Path to save the processed predictions JSON file.
         area_threshold (int): Minimum area required for a mask to be retained.
+        skip_coco_eval (bool): If True, skip COCO evaluation (for inference mode).
     """
 
 
@@ -183,32 +185,23 @@ def filter_masks_by_area(gt_json_path, pred_json_path, output_json_path, area_th
 
     print(f"Processed predictions saved to {output_json_path}")
 
-    # 初始化COCO验证器
-    coco_pred = coco_gt.loadRes(output_json_path)
-    
-    # if True:
-    #     for ann in coco_pred.dataset['annotations']:
-    #         ann['category_id'] = 1  # 将所有类别 ID 设置为 1
-    #     for ann in coco_gt.dataset['annotations']:
-    #         ann['category_id'] = 1  # 将所有类别 ID 设置为 1
-
-    # 计算mAP
-    coco_eval = COCOeval(coco_gt, coco_pred, 'segm')
-    coco_eval.evaluate()
-    coco_eval.accumulate()
-    coco_eval.summarize()
+    # Run COCO evaluation if not skipped (skip for inference mode)
+    if not skip_coco_eval:
+        coco_pred = coco_gt.loadRes(output_json_path)
+        coco_eval = COCOeval(coco_gt, coco_pred, 'segm')
+        coco_eval.evaluate()
+        coco_eval.accumulate()
+        coco_eval.summarize()
 
 # Example usage
 if __name__ == "__main__":
-    gt_json_path = "/home/jinghao/projects/dental_plague_detection/PlaqueSAM/demo_PlaqueSAM/infer_ins_ToI.json"  # Replace with the path to your ground truth JSON
-    pred_json_path = "/home/jinghao/projects/dental_plague_detection/PlaqueSAM/logs_infer_demo/saved_jsons/_pred_val_epoch_000.json"  # Replace with the path to your predictions JSON
-    output_json_path = "/home/jinghao/projects/dental_plague_detection/PlaqueSAM/logs_infer_demo/saved_jsons/_pred_val_epoch_000_postprocessed_for_visualization.json"  # Replace with the desired output path _for_visualization
+    parser = argparse.ArgumentParser(description='Postprocess PlaqueSAM predictions')
+    parser.add_argument('--gt-json', required=True, help='Path to ground truth JSON')
+    parser.add_argument('--pred-json', required=True, help='Path to predictions JSON')
+    parser.add_argument('--output-json', required=True, help='Path to save processed predictions')
+    parser.add_argument('--area-threshold', type=int, default=1000, help='Minimum area threshold (default: 1000)')
+    parser.add_argument('--skip-coco-eval', action='store_true', help='Skip COCO evaluation (for inference mode)')
     
-    # for abalation exps for w/wo template
-    # gt_json_path = "/home/jinghao/projects/dental_plague_detection/dataset/2025_template_ablation/dataset_10_kids/w_template_coco_format_for_test/test_ins_ToI.json"  # Replace with the path to your ground truth JSON
-    # pred_json_path = "/home/jinghao/projects/dental_plague_detection/PlaqueSAM/logs_Eval_abalation_exps_w_template_testset_10_kids_wo_image_classifier/saved_jsons/_pred_val_epoch_000.json"  # Replace with the path to your predictions JSON
-    # output_json_path = "/home/jinghao/projects/dental_plague_detection/PlaqueSAM/logs_Eval_abalation_exps_w_template_testset_10_kids_wo_image_classifier/saved_jsons/_pred_val_epoch_000_postprocessed.json"  # Replace with the desired output path
-
-    area_threshold = 1000  # Replace with the minimum area threshold; 1500 / 200
+    args = parser.parse_args()
     
-    filter_masks_by_area(gt_json_path, pred_json_path, output_json_path, area_threshold)
+    filter_masks_by_area(args.gt_json, args.pred_json, args.output_json, args.area_threshold, args.skip_coco_eval)
