@@ -3,6 +3,7 @@ from torchmetrics.detection.mean_ap import MeanAveragePrecision
 from torchmetrics.classification import MulticlassJaccardIndex
 
 import os
+import logging
 import matplotlib.pyplot as plt
 import numpy as np
 import cv2
