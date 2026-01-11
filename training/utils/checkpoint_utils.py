@@ -215,7 +215,7 @@ def load_checkpoint(
         raise ValueError(f"No path exists in {path_list}")
 
     with g_pathmgr.open(path, "rb") as f:
-        checkpoint = torch.load(f, map_location=map_location)
+        checkpoint = torch.load(f, map_location=map_location, weights_only=False)
 
     logging.info(f"Loaded checkpoint from {path}")
     if pick_recursive_keys is not None:
@@ -272,7 +272,7 @@ def load_checkpoint_and_apply_kernels(
 
     # Load the checkpoint on CPU to avoid GPU mem spike.
     with g_pathmgr.open(checkpoint_path, "rb") as f:
-        checkpoint = torch.load(f, map_location=map_location)
+        checkpoint = torch.load(f, map_location=map_location, weights_only=False)
 
     pre_train_dict = get_state_dict(checkpoint, ckpt_state_dict_keys)
 
