@@ -274,7 +274,7 @@ class BoxDecoder(nn.Module):
         return backbone_out, bs, memories, feat_sizes, level_start_index, spatial_shapes, valid_ratios
 
     def gen_encoder_output_proposals(self, memory:Tensor, memory_padding_mask:Tensor, spatial_shapes:Tensor, learnedwh=None):
-        """
+        r"""
         Input:
             - memory: bs, \sum{hw}, d_model
             - memory_padding_mask: bs, \sum{hw}
