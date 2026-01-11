@@ -597,6 +597,16 @@ class Postprocessor_for_Instance_Segmentation:
         if not os.path.exists(self.saved_jsons_dir):
             os.makedirs(self.saved_jsons_dir)
 
+        # Handle empty predictions gracefully
+        if not self.pred_ins:
+            logging.warning("No predictions to evaluate. Returning default metrics.")
+            return {
+                'AP': -1.0, 'AP50': -1.0, 'AP75': -1.0,
+                'AP_small': -1.0, 'AP_medium': -1.0, 'AP_large': -1.0,
+                'AR1': -1.0, 'AR10': -1.0, 'AR100': -1.0,
+                'AR_small': -1.0, 'AR_medium': -1.0, 'AR_large': -1.0,
+            }
+
         _gt_json_path = os.path.join(self.saved_jsons_dir, "_gt_val.json")
 
         # if not (os.path.exists(_gt_json_path) and os.path.isfile(_gt_json_path)):
