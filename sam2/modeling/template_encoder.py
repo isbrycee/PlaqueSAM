@@ -7,8 +7,10 @@ from torchvision import transforms
 
 
 class TemplateFeatureExtractor:
-    def __init__(self, folder_path, device='cuda'):
-        self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
+    def __init__(self, folder_path, device=None):
+        if device is None:
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.device = torch.device(device)
         self.templates = self._load_templates(folder_path)
         self.feature_net = self._build_network().to(self.device)
         self.template_features = self._process_templates()
@@ -61,12 +63,16 @@ class TemplateFeatureExtractor:
     def get_prior_loc_template_memory(self):
         """获取处理后的模板特征列表"""
         _, H, W = self.template_features[0].shape
+        num_levels = 4 # Match n_levels in DeformableAttention
 
-        template_memory_spatial_shapes = torch.tensor([[H, W]]).to(self.device)
+        # Repeat features and masks for 4 levels
+        multi_level_features = [torch.cat([feat.unsqueeze(0)] * num_levels, dim=0) for feat in self.template_features]
+        
+        template_memory_spatial_shapes = torch.tensor([[H, W]] * num_levels).to(self.device)
 
-        template_memory_level_start_index = torch.tensor(0).to(self.device)
+        template_memory_level_start_index = torch.tensor([i * H * W for i in range(num_levels)]).to(self.device).long()
 
-        template_memory_key_padding_mask = torch.zeros(len(self.template_features), H * W, dtype=torch.bool).to(self.device)
+        template_memory_key_padding_mask = torch.zeros(len(self.template_features), num_levels * H * W, dtype=torch.bool).to(self.device)
 
-        return self.template_features, template_memory_spatial_shapes, template_memory_level_start_index, template_memory_key_padding_mask
+        return multi_level_features, template_memory_spatial_shapes, template_memory_level_start_index, template_memory_key_padding_mask
     

@@ -396,15 +396,16 @@ class SetCriterion_MaskDINO(nn.Module):
         if self.dn != "no" and mask_dict is not None:
             output_known_lbs_bboxes,num_tgt,single_pad,scalar = self.prep_for_dn(mask_dict)
             exc_idx = []
+            device = next(iter(outputs.values())).device
             for i in range(len(targets)):
                 if len(targets[i]['labels']) > 0:
-                    t = torch.arange(0, len(targets[i]['labels'])).long().cuda()
+                    t = torch.arange(0, len(targets[i]['labels'])).long().to(device)
                     t = t.unsqueeze(0).repeat(scalar, 1)
                     tgt_idx = t.flatten()
-                    output_idx = (torch.tensor(range(scalar)) * single_pad).long().cuda().unsqueeze(1) + t
+                    output_idx = (torch.tensor(range(scalar)) * single_pad).long().to(device).unsqueeze(1) + t
                     output_idx = output_idx.flatten()
                 else:
-                    output_idx = tgt_idx = torch.tensor([]).long().cuda()
+                    output_idx = tgt_idx = torch.tensor([]).long().to(device)
                 exc_idx.append((output_idx, tgt_idx))
         indices = self.matcher(outputs_without_aux, targets)
         # Compute the average number of target boxes accross all nodes, for normalization purposes
@@ -429,12 +430,13 @@ class SetCriterion_MaskDINO(nn.Module):
             losses.update(l_dict)
         elif self.dn != "no":
             l_dict = dict()
-            l_dict['loss_bbox_dn'] = torch.as_tensor(0.).to('cuda')
-            l_dict['loss_giou_dn'] = torch.as_tensor(0.).to('cuda')
-            l_dict['loss_ce_dn'] = torch.as_tensor(0.).to('cuda')
+            device = next(iter(outputs.values())).device
+            l_dict['loss_bbox_dn'] = torch.as_tensor(0.).to(device)
+            l_dict['loss_giou_dn'] = torch.as_tensor(0.).to(device)
+            l_dict['loss_ce_dn'] = torch.as_tensor(0.).to(device)
             if self.dn == "seg":
-                l_dict['loss_mask_dn'] = torch.as_tensor(0.).to('cuda')
-                l_dict['loss_dice_dn'] = torch.as_tensor(0.).to('cuda')
+                l_dict['loss_mask_dn'] = torch.as_tensor(0.).to(device)
+                l_dict['loss_dice_dn'] = torch.as_tensor(0.).to(device)
             losses.update(l_dict)
 
         # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
@@ -460,12 +462,13 @@ class SetCriterion_MaskDINO(nn.Module):
                         losses.update(l_dict)
                     elif self.dn != "no":
                         l_dict = dict()
-                        l_dict[f'loss_bbox_dn_{i}'] = torch.as_tensor(0.).to('cuda')
-                        l_dict[f'loss_giou_dn_{i}'] = torch.as_tensor(0.).to('cuda')
-                        l_dict[f'loss_ce_dn_{i}'] = torch.as_tensor(0.).to('cuda')
+                        device = next(iter(outputs.values())).device
+                        l_dict[f'loss_bbox_dn_{i}'] = torch.as_tensor(0.).to(device)
+                        l_dict[f'loss_giou_dn_{i}'] = torch.as_tensor(0.).to(device)
+                        l_dict[f'loss_ce_dn_{i}'] = torch.as_tensor(0.).to(device)
                         if self.dn == "seg":
-                            l_dict[f'loss_mask_dn_{i}'] = torch.as_tensor(0.).to('cuda')
-                            l_dict[f'loss_dice_dn_{i}'] = torch.as_tensor(0.).to('cuda')
+                            l_dict[f'loss_mask_dn_{i}'] = torch.as_tensor(0.).to(device)
+                            l_dict[f'loss_dice_dn_{i}'] = torch.as_tensor(0.).to(device)
                         losses.update(l_dict)
         # interm_outputs loss
         if 'interm_outputs' in outputs:

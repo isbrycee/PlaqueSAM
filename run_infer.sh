@@ -1,4 +1,5 @@
-if [ "$CPU" == "1" ]; then
+#!/bin/bash
+if [ "$CPU" = "1" ]; then
     export CUDA_VISIBLE_DEVICES=-1
     NUM_GPUS=0
 else

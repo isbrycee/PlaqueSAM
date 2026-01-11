@@ -250,7 +250,7 @@ class BoxDecoder(nn.Module):
         vision_feats = []
         len_feat_list = []
         for id, (vision_feat, vision_pos_embed) in enumerate(zip(backbone_out["backbone_fpn"], backbone_out["vision_pos_enc"])):
-            vision_feats.append(self.fpn_channel_proj[id].cuda()(vision_feat)+vision_pos_embed)
+            vision_feats.append(self.fpn_channel_proj[id].to(device)(vision_feat)+vision_pos_embed)
             len_feat_list.append(vision_feats[-1].shape[-2] * vision_feats[-1].shape[-1])
         
         for i, op_conv in enumerate(self.neck_generate_two_more_scales_feats):
@@ -322,7 +322,6 @@ class BoxDecoder(nn.Module):
         return output_memory, output_proposals
 
     def forward(self, backbone_out: dict):
-
         (
             _, bs, memories, feat_sizes, level_start_index, spatial_shapes, valid_ratios
         ) = self._prepare_backbone_features(backbone_out)
@@ -381,6 +380,13 @@ class BoxDecoder(nn.Module):
             # valid_ratios = torch.ones(bs, 1, 2).to(device)
             # level_start_index = torch.tensor(0,).to(device)
 
+        (
+            prior_loc_template_feas, 
+            prior_loc_template_spatial_shapes, 
+            prior_loc_template_level_start_index, 
+            prior_loc_template_key_padding_mask
+        ) = backbone_out['prior_loc_template_memory']
+
         hs, references = self.decoder(
                 tgt=tgt.transpose(0, 1).contiguous(), # query 
                 memory=memories, # image feature, note here, the memory format is [hw, bs, d_model]
@@ -391,7 +397,10 @@ class BoxDecoder(nn.Module):
                 spatial_shapes=spatial_shapes,
                 valid_ratios=valid_ratios,
                 tgt_mask=None, # torch.ones((self.num_queries, self.num_queries)).to(device),
-                prior_loc_template_memory=backbone_out['prior_loc_template_memory'],
+                prior_loc_template_memory=prior_loc_template_feas, 
+                prior_loc_template_spatial_shapes=prior_loc_template_spatial_shapes, 
+                prior_loc_template_level_start_index=prior_loc_template_level_start_index, 
+                prior_loc_template_key_padding_mask=prior_loc_template_key_padding_mask,
                 prior_loc_template_order_id_in_img_batch=backbone_out['template_order_id_in_img_batch'])
         
         outputs_coord_list = []
@@ -486,14 +495,17 @@ class TransformerDecoder(nn.Module):
                 tgt_key_padding_mask: Optional[Tensor] = None,
                 memory_key_padding_mask: Optional[Tensor] = None,
                 pos: Optional[Tensor] = None,
-                refpoints_unsigmoid: Optional[Tensor] = None, # num_queries, bs, 2
-                # for memory
+                refpoints_unsigmoid: Optional[Tensor] = None, # nq, bs, 2/4
                 level_start_index: Optional[Tensor] = None, # num_levels
                 spatial_shapes: Optional[Tensor] = None, # bs, num_levels, 2
                 valid_ratios: Optional[Tensor] = None,
+                # for prior loc feas
                 prior_loc_template_memory: Optional[Tensor] = None,
+                prior_loc_template_spatial_shapes: Optional[Tensor] = None,
+                prior_loc_template_level_start_index: Optional[Tensor] = None,
+                prior_loc_template_key_padding_mask: Optional[Tensor] = None,
                 prior_loc_template_order_id_in_img_batch: List = None,
-                ):
+            ):
         """
         Input:
             - tgt: nq, bs, d_model
@@ -562,6 +574,9 @@ class TransformerDecoder(nn.Module):
                     cross_attn_mask = memory_mask,
 
                     prior_loc_template_memory = prior_loc_template_memory,
+                    prior_loc_template_spatial_shapes = prior_loc_template_spatial_shapes,
+                    prior_loc_template_level_start_index = prior_loc_template_level_start_index,
+                    prior_loc_template_key_padding_mask = prior_loc_template_key_padding_mask,
                     prior_loc_template_order_id_in_img_batch = prior_loc_template_order_id_in_img_batch
                 )
 
@@ -801,8 +816,12 @@ class DeformableTransformerDecoderLayer(nn.Module):
 
         sorted_memory = [memory[i] for i in prior_loc_template_order_id_in_img_batch]
         sorted_memory = torch.stack(sorted_memory, dim=0)
-        B, C, H, W = sorted_memory.shape
-        sorted_memory = sorted_memory.view(B, -1, C)
+        if sorted_memory.dim() == 5:
+            B, L, C, H, W = sorted_memory.shape
+            sorted_memory = sorted_memory.permute(0, 1, 3, 4, 2).reshape(B, L*H*W, C)
+        else:
+            B, C, H, W = sorted_memory.shape
+            sorted_memory = sorted_memory.permute(0, 2, 3, 1).reshape(B, H*W, C)
 
         sorted_memory = self.prior_loc_adapter(sorted_memory.to(device)).contiguous() # .permute(1,0,2)
         # change by bryce; note change back !!!
@@ -839,6 +858,9 @@ class DeformableTransformerDecoderLayer(nn.Module):
 
                 # for prior loc feas
                 prior_loc_template_memory: Optional[Tensor] = None,
+                prior_loc_template_spatial_shapes: Optional[Tensor] = None,
+                prior_loc_template_level_start_index: Optional[Tensor] = None,
+                prior_loc_template_key_padding_mask: Optional[Tensor] = None,
                 prior_loc_template_order_id_in_img_batch: List = None,
             ):
 
@@ -856,16 +878,11 @@ class DeformableTransformerDecoderLayer(nn.Module):
                         memory, memory_key_padding_mask, memory_level_start_index, \
                             memory_spatial_shapes, memory_pos, self_attn_mask, cross_attn_mask)
             elif funcname == 'plca':
-                # continue
-                template_features, template_memory_spatial_shapes, template_memory_level_start_index, template_memory_key_padding_mask = prior_loc_template_memory
-
-                tgt = self.forward_plca(tgt, tgt_query_pos, \
-                        tgt_query_sine_embed, \
-                        tgt_key_padding_mask, tgt_reference_points, \
-                        template_features, template_memory_key_padding_mask, template_memory_level_start_index, \
-                        template_memory_spatial_shapes, prior_loc_template_order_id_in_img_batch, 
-                        self_attn_mask, cross_attn_mask
-                        )
+                tgt = self.forward_plca(tgt, tgt_query_pos, tgt_query_sine_embed, \
+                    tgt_key_padding_mask, tgt_reference_points, \
+                        prior_loc_template_memory, prior_loc_template_key_padding_mask, \
+                            prior_loc_template_level_start_index, prior_loc_template_spatial_shapes, \
+                                prior_loc_template_order_id_in_img_batch)
             else:
                 raise ValueError('unknown funcname {}'.format(funcname))
 

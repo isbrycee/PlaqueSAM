@@ -3,7 +3,7 @@
 scratch:
   resolution: 512
   train_batch_size: 1
-  num_train_workers: 16 # 16
+  num_train_workers: 0 # 16
   num_frames: 6
   num_frames_with_invalid: 6 # 8
   num_multimask_outputs: 3

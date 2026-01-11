@@ -303,9 +303,15 @@ def main(gt_json_path, pred_mask_json_path, pred_box_json_path, image_root, out_
 
 
 if __name__ == "__main__":
-    gt_json_path = '/home/jinghao/projects/dental_plague_detection/PlaqueSAM/demo_PlaqueSAM/infer_ins_ToI.json'
-    pred_mask_json_path = '/home/jinghao/projects/dental_plague_detection/PlaqueSAM/logs_infer_demo/saved_jsons/_pred_val_epoch_000_postprocessed_for_visualization.json' 
-    pred_box_json_path = '/home/jinghao/projects/dental_plague_detection/PlaqueSAM/logs_infer_demo/saved_jsons/_box_pred_val_epoch_000_for_visualization.json' # _box_pred_val_epoch_000_for_visualization.json
-    image_root = '/home/jinghao/projects/dental_plague_detection/PlaqueSAM/demo_PlaqueSAM/JPEGImages'
-    out_dir = '/home/jinghao/projects/dental_plague_detection/PlaqueSAM/demo_PlaqueSAM/visualizations/'
+    # Get the directory of the current script
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    # Base path is two levels up from tools/
+    base_path = os.path.abspath(os.path.join(script_dir, '..'))
+    
+    gt_json_path = os.path.join(base_path, 'demo_PlaqueSAM/infer_ins_ToI.json')
+    pred_mask_json_path = os.path.join(base_path, 'logs_infer_demo/saved_jsons/_pred_val_epoch_000.json')
+    pred_box_json_path = os.path.join(base_path, 'logs_infer_demo/saved_jsons/_box_pred_val_epoch_000_for_visualization.json')
+    image_root = os.path.join(base_path, 'demo_PlaqueSAM/JPEGImages')
+    out_dir = os.path.join(base_path, 'demo_PlaqueSAM/visualizations/')
+    
     main(gt_json_path, pred_mask_json_path, pred_box_json_path, image_root, out_dir)
