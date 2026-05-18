@@ -209,6 +209,9 @@ def draw_box(img, bbox, label, color, thickness=2, font_scale=1.5):
 
 def draw_fallback_boxes_from_masks(img, pred_anns, pred_boxes, coco_gt):
     boxed_labels = {str(box_info.get('category')) for box_info in pred_boxes if is_valid_box_info(box_info)}
+    healthy_bboxes_by_label = defaultdict(list)
+    plaque_bboxes_by_label = defaultdict(list)
+
     for ann in pred_anns:
         category_id = ann.get('category_id')
         if category_id is None or category_id % 3 not in (0, 1):
@@ -220,7 +223,20 @@ def draw_fallback_boxes_from_masks(img, pred_anns, pred_boxes, coco_gt):
         bbox = bbox_from_mask(mask)
         if bbox is None:
             continue
-        draw_box(img, bbox, label, color_for_label(label), 4)
+        if category_id % 3 == 1:
+            healthy_bboxes_by_label[label].append(bbox)
+        else:
+            plaque_bboxes_by_label[label].append(bbox)
+
+    fallback_labels = list(healthy_bboxes_by_label)
+    fallback_labels.extend(label for label in plaque_bboxes_by_label if label not in healthy_bboxes_by_label)
+    for label in fallback_labels:
+        bboxes = healthy_bboxes_by_label.get(label) or plaque_bboxes_by_label[label]
+        x1 = min(bbox[0] for bbox in bboxes)
+        y1 = min(bbox[1] for bbox in bboxes)
+        x2 = max(bbox[2] for bbox in bboxes)
+        y2 = max(bbox[3] for bbox in bboxes)
+        draw_box(img, (x1, y1, x2, y2), label, color_for_label(label), 4)
 
 def scale_bbox(bbox, scale_x, scale_y):
     # bbox: [x, y, w, h]

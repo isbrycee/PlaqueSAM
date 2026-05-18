@@ -47,20 +47,34 @@ def run_vis(monkeypatch, pred_anns, pred_boxes):
     return calls
 
 
-def test_fallback_labels_non_caries_masks_and_skips_caries(monkeypatch):
+def test_same_label_plaque_only_masks_draw_one_union_fallback_box(monkeypatch):
     calls = run_vis(
         monkeypatch,
         [
             {'category_id': 0, 'mask': mask_with_rect(2, 3, 5, 7)},
-            {'category_id': 1, 'mask': mask_with_rect(8, 2, 12, 4)},
+            {'category_id': 0, 'mask': mask_with_rect(8, 2, 12, 4)},
             {'category_id': 2, 'mask': mask_with_rect(1, 1, 3, 3)},
         ],
         [],
     )
 
-    assert [call['label'] for call in calls] == ['51', '51']
-    assert calls[0]['bbox'] == (2, 3, 5, 7)
+    assert [call['label'] for call in calls] == ['51']
+    assert calls[0]['bbox'] == (2, 2, 12, 7)
     assert calls[0]['color'] == vis.box_class_color_dict['51']
+
+
+def test_same_label_healthy_and_plaque_masks_prefer_healthy_fallback_box(monkeypatch):
+    calls = run_vis(
+        monkeypatch,
+        [
+            {'category_id': 0, 'mask': mask_with_rect(2, 3, 5, 7)},
+            {'category_id': 1, 'mask': mask_with_rect(8, 2, 12, 4)},
+        ],
+        [],
+    )
+
+    assert [call['label'] for call in calls] == ['51']
+    assert calls[0]['bbox'] == (8, 2, 12, 4)
 
 
 def test_existing_box_label_prevents_duplicate_fallback_box(monkeypatch):
