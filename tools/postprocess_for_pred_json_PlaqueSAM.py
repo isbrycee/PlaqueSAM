@@ -172,6 +172,7 @@ def filter_masks_by_area(gt_json_path, pred_json_path, output_json_path, area_th
         for i, mask in enumerate(mask_ids):
             binary_mask = (mask > 0).astype(np.uint8)
             adjusted_rle = mask_utils.encode(np.asfortranarray(binary_mask))
+            annotations[i]['area'] = float(mask_utils.area(adjusted_rle))
             adjusted_rle['counts'] = adjusted_rle['counts'].decode('utf-8')  # Ensure JSON serializable
             annotations[i]['segmentation'] = adjusted_rle
 

@@ -4,7 +4,10 @@ import cv2
 import numpy as np
 from collections import defaultdict
 from tqdm import tqdm
-from pycocotools.coco import COCO
+try:
+    from pycocotools.coco import COCO
+except ImportError:  # pragma: no cover - only main() needs pycocotools.
+    COCO = None
 
 box_class_color_dict = {
     # 5x: 冷色（蓝-紫-青）
@@ -48,6 +51,41 @@ box_class_color_dict = {
     'doubleteeth': (255, 57, 0)
 }
 
+DEFAULT_BOX_COLOR = (255, 255, 255)
+
+toothID_to_Number_Map = {
+    0: '51',
+    1: '52',
+    2: '53',
+    3: '54',
+    4: '55',
+    5: '61',
+    6: '62',
+    7: '63',
+    8: '64',
+    9: '65',
+    10: '71',
+    11: '72',
+    12: '73',
+    13: '74',
+    14: '75',
+    15: '81',
+    16: '82',
+    17: '83',
+    18: '84',
+    19: '85',
+    20: '11',
+    21: '16',
+    22: '21',
+    23: '26',
+    24: '31',
+    25: '36',
+    26: '41',
+    27: '46',
+    28: 'doubleteeth',
+    29: 'crown'
+}
+
 def compute_iou(mask1, mask2):
     inter = np.logical_and(mask1, mask2).sum()
     union = np.logical_or(mask1, mask2).sum()
@@ -58,6 +96,55 @@ def compute_iou(mask1, mask2):
 def load_json(json_path):
     with open(json_path, 'r', encoding='utf-8') as f:
         return json.load(f)
+
+def load_box_json(json_path):
+    try:
+        data = load_json(json_path)
+    except (OSError, json.JSONDecodeError, TypeError) as exc:
+        print(f'Warning: could not load box JSON {json_path}: {exc}')
+        return []
+    if not isinstance(data, list):
+        print(f'Warning: box JSON {json_path} is not a list; ignoring boxes')
+        return []
+    return data
+
+def is_valid_box_info(box_info):
+    if not isinstance(box_info, dict):
+        return False
+    bbox = box_info.get('bbox')
+    return (
+        'file_name' in box_info
+        and 'category' in box_info
+        and isinstance(bbox, (list, tuple))
+        and len(bbox) == 4
+    )
+
+def label_for_category_id(category_id):
+    return toothID_to_Number_Map.get(category_id // 3, str(category_id // 3))
+
+def color_for_label(label):
+    return box_class_color_dict.get(str(label), DEFAULT_BOX_COLOR)
+
+def clamp_bbox_to_image(bbox, img_shape):
+    h, w = img_shape[:2]
+    if h <= 0 or w <= 0:
+        return 0, 0, 0, 0
+    x1, y1, x2, y2 = [int(round(b)) for b in bbox]
+    x1 = max(0, min(w - 1, x1))
+    y1 = max(0, min(h - 1, y1))
+    x2 = max(0, min(w - 1, x2))
+    y2 = max(0, min(h - 1, y2))
+    if x2 < x1:
+        x1, x2 = x2, x1
+    if y2 < y1:
+        y1, y2 = y2, y1
+    return x1, y1, x2, y2
+
+def bbox_from_mask(mask):
+    ys, xs = np.where(mask == 1)
+    if len(xs) == 0 or len(ys) == 0:
+        return None
+    return int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())
 
 def adjust_color(color, factor=0.7):
     """
@@ -83,7 +170,7 @@ def draw_box(img, bbox, label, color, thickness=2, font_scale=1.5):
         thickness (int): 边界框线条粗细。
         font_scale (float): 标签文本的字体大小。
     """
-    x1, y1, x2, y2 = [int(round(b)) for b in bbox]
+    x1, y1, x2, y2 = clamp_bbox_to_image(bbox, img.shape)
     
     # 绘制边框
     cv2.rectangle(img, (x1, y1), (x2, y2), color, thickness, lineType=cv2.LINE_AA)
@@ -91,14 +178,15 @@ def draw_box(img, bbox, label, color, thickness=2, font_scale=1.5):
     # 计算标签的尺寸
     text_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness=1)[0]
     text_width, text_height = text_size
-    text_offset_x, text_offset_y = x1, max(0, y1 - text_height - 10)
+    h, w = img.shape[:2]
+    text_offset_x = max(0, min(w - 1, x1))
+    text_offset_y = max(0, y1 - text_height - 10)
     
     # 标签背景的坐标
     pad_x, pad_y = 10, 5  # 背景填充的内边距
-    box_coords = (
-        (text_offset_x, text_offset_y),  # 左上角
-        (text_offset_x + text_width + 2 * pad_x, text_offset_y + text_height + 2 * pad_y)  # 右下角
-    )
+    bg_x2 = min(w - 1, text_offset_x + text_width + 2 * pad_x)
+    bg_y2 = min(h - 1, text_offset_y + text_height + 2 * pad_y)
+    box_coords = ((text_offset_x, text_offset_y), (bg_x2, bg_y2))
     
     # 计算文字背景颜色（基于边界框颜色，稍微调暗）
     bg_color = adjust_color(color, factor=0.7)
@@ -114,8 +202,41 @@ def draw_box(img, bbox, label, color, thickness=2, font_scale=1.5):
     text_color = (255, 255, 255) if brightness < 128 else (0, 0, 0)
     
     # 绘制标签文字
-    cv2.putText(img, label, (text_offset_x + pad_x, text_offset_y + text_height + pad_y),
+    text_x = min(w - 1, text_offset_x + pad_x)
+    text_y = min(h - 1, text_offset_y + text_height + pad_y)
+    cv2.putText(img, label, (text_x, text_y),
                 cv2.FONT_HERSHEY_SIMPLEX, font_scale, text_color, 2, cv2.LINE_AA)
+
+def draw_fallback_boxes_from_masks(img, pred_anns, pred_boxes, coco_gt):
+    boxed_labels = {str(box_info.get('category')) for box_info in pred_boxes if is_valid_box_info(box_info)}
+    healthy_bboxes_by_label = defaultdict(list)
+    plaque_bboxes_by_label = defaultdict(list)
+
+    for ann in pred_anns:
+        category_id = ann.get('category_id')
+        if category_id is None or category_id % 3 not in (0, 1):
+            continue
+        label = label_for_category_id(category_id)
+        if label in boxed_labels:
+            continue
+        mask = coco_gt.annToMask(ann)
+        bbox = bbox_from_mask(mask)
+        if bbox is None:
+            continue
+        if category_id % 3 == 1:
+            healthy_bboxes_by_label[label].append(bbox)
+        else:
+            plaque_bboxes_by_label[label].append(bbox)
+
+    fallback_labels = list(healthy_bboxes_by_label)
+    fallback_labels.extend(label for label in plaque_bboxes_by_label if label not in healthy_bboxes_by_label)
+    for label in fallback_labels:
+        bboxes = healthy_bboxes_by_label.get(label) or plaque_bboxes_by_label[label]
+        x1 = min(bbox[0] for bbox in bboxes)
+        y1 = min(bbox[1] for bbox in bboxes)
+        x2 = max(bbox[2] for bbox in bboxes)
+        y2 = max(bbox[3] for bbox in bboxes)
+        draw_box(img, (x1, y1, x2, y2), label, color_for_label(label), 4)
 
 def scale_bbox(bbox, scale_x, scale_y):
     # bbox: [x, y, w, h]
@@ -171,12 +292,15 @@ def vis_one_image(img_path, pred_anns, pred_boxes, gt_anns, coco_gt, cat_id_to_n
     # 1. 画box（缩放到当前图片大小）
     scale_x = w / box_base_size
     scale_y = h / box_base_size
-    for box_info in pred_boxes:
+    valid_pred_boxes = [box_info for box_info in pred_boxes if is_valid_box_info(box_info)]
+    for box_info in valid_pred_boxes:
         box = box_info['bbox']
         label = str(box_info['category'])
         # score = box_info['score']
         scaled_box = scale_bbox(box, scale_x, scale_y)
-        draw_box(img, scaled_box, label, box_class_color_dict[label], 4)
+        draw_box(img, scaled_box, label, color_for_label(label), 4)
+
+    draw_fallback_boxes_from_masks(img, pred_anns, valid_pred_boxes, coco_gt)
 
     # 2. 可视化 category_id 能被 2 整除的 mask
     mask_anns = [ann for ann in pred_anns if ann['category_id'] % 3 == 0 or ann['category_id'] % 3 == 1]
@@ -264,9 +388,11 @@ def main(gt_json_path, pred_mask_json_path, pred_box_json_path, image_root, out_
     os.makedirs(out_dir, exist_ok=True)
     gt_json = load_json(gt_json_path)
     pred_mask_json = load_json(pred_mask_json_path)
-    pred_box_json = load_json(pred_box_json_path)
+    pred_box_json = load_box_json(pred_box_json_path)
 
     # 用COCO对象读取gt，方便annToMask
+    if COCO is None:
+        raise ImportError('pycocotools is required to run visualization main()')
     coco_gt = COCO(gt_json_path)
 
     # file_name <-> image_id 映射
@@ -280,6 +406,8 @@ def main(gt_json_path, pred_mask_json_path, pred_box_json_path, image_root, out_
     # box按file_name分组
     pred_boxes_per_file = defaultdict(list)
     for box in pred_box_json:
+        if not is_valid_box_info(box):
+            continue
         pred_boxes_per_file[box['file_name']].append(box)
 
     # gt anns按image_id分组

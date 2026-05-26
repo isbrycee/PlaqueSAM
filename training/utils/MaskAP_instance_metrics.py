@@ -400,13 +400,14 @@ class Postprocessor_for_Instance_Segmentation:
                         resized_mask = F.resize(mask_per_cls[None, None], (height, width), interpolation=InterpolationMode.NEAREST).squeeze().contiguous().cpu().numpy().astype(np.uint8)
                         # resized_mask = self.binary_mask_to_polygon(resized_mask)
                         resized_mask_rle = mask_utils.encode(np.asfortranarray(resized_mask))
+                        bbox = mask_utils.toBbox(resized_mask_rle).tolist()
                         resized_mask_rle["counts"] = resized_mask_rle["counts"].decode("utf-8")
 
                         pred_ins = {
                                     "image_id": img_id,
                                     "category_id": category_id,
                                     "score": pred_score,
-                                    # "bbox": mask_utils.toBbox(resized_mask_rle).tolist(),  # 从 RLE 生成检测框, # error box coor=s
+                                    "bbox": bbox,
                                     "segmentation": resized_mask_rle,
                                 }
                         self.pred_ins.append(pred_ins)
@@ -514,13 +515,14 @@ class Postprocessor_for_Instance_Segmentation:
                     resized_mask = F.resize(pred_mask[None, None], (real_height, real_width), interpolation=InterpolationMode.NEAREST).squeeze().contiguous().cpu().numpy().astype(np.uint8)
                     # resized_mask = self.binary_mask_to_polygon(resized_mask)
                     resized_mask_rle = mask_utils.encode(np.asfortranarray(resized_mask))
+                    bbox = mask_utils.toBbox(resized_mask_rle).tolist()
                     resized_mask_rle["counts"] = resized_mask_rle["counts"].decode("utf-8")
 
                     pred_ins = {
                                 "image_id": img_id,
                                 "category_id": category_id,
                                 "score": pred_score_mask.item(),
-                                # "bbox": mask_utils.toBbox(resized_mask_rle).tolist(),  # 从 RLE 生成检测框, # error box coor=s
+                                "bbox": bbox,
                                 "segmentation": resized_mask_rle,
                             }
                     self.pred_ins.append(pred_ins)
